@@ -5,7 +5,7 @@ Autonomous AI developer. Polls GitHub for assigned issues, spawns Claude Code to
 ## Quick Start
 
 ```bash
-git clone https://github.com/Berget-Industries/ultradev.git && cd ultradev && pnpm install && claude
+git clone https://github.com/Berget-Industries/ultradev.git && cd ultradev && pnpm install && claude -p "Run /preflight and help me fix any issues"
 ```
 
 Claude will walk you through `.env` setup on first run. Or copy `.env.example` to `.env` and fill it in manually.
