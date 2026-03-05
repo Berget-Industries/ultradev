@@ -19,7 +19,8 @@ Run a full preflight check to verify UltraDev is ready to work. Check each item 
 - Verify `ULTRADEV_GITHUB_USERNAME` is set and not the default "ultradev"
 - Verify `ULTRADEV_REPOS_DIR` path exists (or can be created)
 - Verify `ULTRADEV_LOGS_DIR` path exists (or can be created)
-- If `ULTRADEV_DISCORD_ENABLED=true`, verify `ULTRADEV_DISCORD_TOKEN` and `ULTRADEV_DISCORD_CHANNEL_ID` are set
+- If `ULTRADEV_DISCORD_ENABLED=true`, verify `ULTRADEV_DISCORD_TOKEN` and `ULTRADEV_DISCORD_OWNER_USER_ID` are set
+- If `ULTRADEV_ERROR_WATCHER_ENABLED=true`, verify `ULTRADEV_ERROR_WATCHER_REPO` is set and `ULTRADEV_DISCORD_TRIGGER_WHITELIST` has at least one entry
 
 ### 5. Dependencies
 - Check `node_modules` exists, if not suggest `pnpm install`
