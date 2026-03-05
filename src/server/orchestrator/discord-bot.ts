@@ -3,7 +3,7 @@ import { execFileSync, spawn } from 'child_process'
 import { readdirSync, existsSync } from 'fs'
 import { join } from 'path'
 import { loadConfig, type TriggerRule } from './config.js'
-import { setDiscordClient, notify } from './notifier.js'
+import { notify } from './notifier.js'
 import { spawnWorker } from './worker.js'
 import { getAllIssues } from './state.js'
 import { tryHeal } from './self-heal.js'
@@ -59,10 +59,7 @@ export async function startDiscordBot() {
   client.once('clientReady', () => {
     console.log(`[discord] Bot online as ${client!.user!.tag}`)
     botStatus = 'online'
-    if (config.discord.notifyChannelId) {
-      setDiscordClient(client!, config.discord.notifyChannelId)
-      notify('UltraDev online. Watching for issues.')
-    }
+    notify('UltraDev online. Watching for issues.')
   })
 
   client.on('messageCreate', async (msg) => {
