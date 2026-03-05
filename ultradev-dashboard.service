@@ -1,0 +1,17 @@
+[Unit]
+Description=UltraDev Dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/openclaw/ultradev/dashboard
+ExecStart=/home/openclaw/ultradev/dashboard/node_modules/.bin/tsx src/server/index.ts
+Restart=always
+RestartSec=5
+Environment=HOME=/home/openclaw
+Environment=NODE_ENV=production
+Environment=PATH=/home/openclaw/.local/bin:/home/openclaw/.npm-global/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target
