@@ -1,6 +1,7 @@
 import { startPolling, stopPolling, updatePollingInterval, getPollerState } from './github-poller.js'
 import { startPrPolling, stopPrPolling, updatePrPollingInterval, getPrPollerState } from './pr-poller.js'
 import { startDiscordBot, getDiscordBotStatus } from './discord-bot.js'
+import { startErrorWatcher, stopErrorWatcher, getErrorWatcherState, runErrorWatcher } from './error-watcher.js'
 import { loadConfig } from './config.js'
 import { getMemoryState, getAllIssues, setIssueState } from './state.js'
 import { parseLogStats } from './log-parser.js'
@@ -124,6 +125,7 @@ export { getActivityLog }
 export {
   startPolling, stopPolling, updatePollingInterval,
   startPrPolling, stopPrPolling, updatePrPollingInterval,
+  startErrorWatcher, stopErrorWatcher, getErrorWatcherState, runErrorWatcher,
 }
 
 export async function startOrchestrator() {
@@ -142,6 +144,7 @@ export async function startOrchestrator() {
 
   startPolling()
   startPrPolling()
+  startErrorWatcher()
 
   // Auto-resume pollers after rate limit clears
   setOnResume(() => {
@@ -189,10 +192,18 @@ export function getOrchestratorState() {
         status: prPoller.pollStatus,
         enabled: prPoller.enabled,
       },
+      {
+        name: 'Error Watcher',
+        schedule: `Every ${config.errorWatcher.intervalMs / 1000 / 60 / 60}h`,
+        lastRun: getErrorWatcherState().lastRunTime,
+        status: getErrorWatcherState().lastRunStatus,
+        enabled: config.errorWatcher.enabled && !!config.errorWatcher.targetRepo,
+      },
     ],
     discord: {
       status: discordStatus,
     },
+    errorWatcher: getErrorWatcherState(),
     workQueue: Object.entries(issues).sort((a, b) => (b[1].updatedAt || 0) - (a[1].updatedAt || 0)).map(([key, state]) => {
       const logStats = state.logFile ? parseLogStats(state.logFile) : null
       const resolvedPrUrl = state.prUrl

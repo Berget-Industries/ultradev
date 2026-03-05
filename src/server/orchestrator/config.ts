@@ -2,6 +2,18 @@ import { join } from 'path'
 
 const HOME = process.env.HOME || '/home/' + (process.env.USER || 'user')
 
+export interface TriggerRule {
+  channelId: string
+  authorId: string
+}
+
+export interface ErrorWatcherConfig {
+  enabled: boolean
+  intervalMs: number
+  targetRepo: string | null
+  labels: string[]
+}
+
 export interface Config {
   github: {
     username: string
@@ -9,9 +21,12 @@ export interface Config {
   }
   discord: {
     enabled: boolean
-    channelId: string | null
     token: string | null
+    ownerUserId: string | null
+    notifyChannelId: string | null
+    triggerWhitelist: TriggerRule[]
   }
+  errorWatcher: ErrorWatcherConfig
   paths: {
     repos: string
     logs: string
@@ -35,7 +50,15 @@ export function loadConfig(): Config {
     discord: {
       enabled: process.env.ULTRADEV_DISCORD_ENABLED !== 'false',
       token: process.env.ULTRADEV_DISCORD_TOKEN || null,
-      channelId: process.env.ULTRADEV_DISCORD_CHANNEL_ID || null,
+      ownerUserId: process.env.ULTRADEV_DISCORD_OWNER_USER_ID || null,
+      notifyChannelId: process.env.ULTRADEV_DISCORD_NOTIFY_CHANNEL_ID || null,
+      triggerWhitelist: parseTriggerWhitelist(process.env.ULTRADEV_DISCORD_TRIGGER_WHITELIST || ''),
+    },
+    errorWatcher: {
+      enabled: process.env.ULTRADEV_ERROR_WATCHER_ENABLED !== 'false',
+      intervalMs: parseInt(process.env.ULTRADEV_ERROR_WATCHER_INTERVAL_MS || String(12 * 60 * 60 * 1000), 10),
+      targetRepo: process.env.ULTRADEV_ERROR_WATCHER_REPO || null,
+      labels: (process.env.ULTRADEV_ERROR_WATCHER_LABELS || 'production,bug,auto-triaged').split(',').map(l => l.trim()).filter(Boolean),
     },
     paths: {
       repos: process.env.ULTRADEV_REPOS_DIR || join(HOME, 'ultradev', 'repos'),
@@ -46,6 +69,15 @@ export function loadConfig(): Config {
       flags,
     },
   }
+}
+
+// Parse "channelId:authorId,channelId:authorId" into TriggerRule[]
+function parseTriggerWhitelist(raw: string): TriggerRule[] {
+  if (!raw.trim()) return []
+  return raw.split(',').map(entry => {
+    const [channelId, authorId] = entry.trim().split(':')
+    return { channelId, authorId }
+  }).filter(r => r.channelId && r.authorId)
 }
 
 // Runtime override for poll interval (used by dashboard API)

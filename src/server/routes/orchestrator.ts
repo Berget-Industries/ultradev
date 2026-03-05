@@ -4,6 +4,7 @@ import {
   getActivityLog,
   startPolling, stopPolling, updatePollingInterval,
   startPrPolling, stopPrPolling, updatePrPollingInterval,
+  startErrorWatcher, stopErrorWatcher, runErrorWatcher,
 } from '../orchestrator/index.js'
 import { setRuntimePollInterval } from '../orchestrator/config.js'
 import { getIssueState, setIssueState } from '../orchestrator/state.js'
@@ -71,12 +72,25 @@ router.put('/jobs/:name', (req, res) => {
       setRuntimePollInterval(intervalMs)
       updatePrPollingInterval(intervalMs)
     }
+  } else if (name === 'error-watcher') {
+    if (typeof enabled === 'boolean') {
+      if (enabled) {
+        startErrorWatcher()
+      } else {
+        stopErrorWatcher()
+      }
+    }
   } else {
     res.status(404).json({ error: `Unknown job: ${name}` })
     return
   }
 
   res.json(getOrchestratorState())
+})
+
+router.post('/error-watcher/run', async (_req, res) => {
+  runErrorWatcher()
+  res.json({ ok: true, message: 'Error watcher triggered' })
 })
 
 router.post('/requeue/:key', (req, res) => {
