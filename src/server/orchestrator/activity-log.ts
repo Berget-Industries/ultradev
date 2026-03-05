@@ -2,7 +2,7 @@ const MAX_ENTRIES = 200
 
 export interface ActivityEntry {
   ts: number
-  source: string  // e.g. 'pr-poller', 'poller', 'worker', 'review-poller', 'system'
+  source: string  // e.g. 'pr-poller', 'poller', 'worker', 'system'
   message: string
 }
 

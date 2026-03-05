@@ -19,13 +19,6 @@ function classifyAgent(command: string, cwd: string): { role: AgentProcess['role
     const label = worktreeMatch ? worktreeMatch[1].replace(/_/g, '#') : cwd.replace(/^.*\/repos\//, '')
     return { role: 'worker', label }
   }
-  if (command.includes('--print') && command.includes('reviewing')) {
-    return { role: 'reviewer', label: 'Work Reviewer' }
-  }
-  if (command.includes('--print') && !command.includes('--output-format')) {
-    // Could be reviewer or other --print task, check content
-    return { role: 'reviewer', label: 'Work Reviewer' }
-  }
   return { role: 'session', label: 'Interactive Session' }
 }
 

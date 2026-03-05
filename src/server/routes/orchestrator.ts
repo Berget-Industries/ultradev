@@ -4,7 +4,6 @@ import {
   getActivityLog,
   startPolling, stopPolling, updatePollingInterval,
   startPrPolling, stopPrPolling, updatePrPollingInterval,
-  startReviewPolling, stopReviewPolling, updateReviewPollingInterval,
 } from '../orchestrator/index.js'
 import { setRuntimePollInterval } from '../orchestrator/config.js'
 import { getIssueState, setIssueState } from '../orchestrator/state.js'
@@ -71,17 +70,6 @@ router.put('/jobs/:name', (req, res) => {
     if (typeof intervalMs === 'number' && intervalMs > 0) {
       setRuntimePollInterval(intervalMs)
       updatePrPollingInterval(intervalMs)
-    }
-  } else if (name === 'work-reviewer') {
-    if (typeof enabled === 'boolean') {
-      if (enabled) {
-        startReviewPolling()
-      } else {
-        stopReviewPolling()
-      }
-    }
-    if (typeof intervalMs === 'number' && intervalMs > 0) {
-      updateReviewPollingInterval(intervalMs)
     }
   } else {
     res.status(404).json({ error: `Unknown job: ${name}` })

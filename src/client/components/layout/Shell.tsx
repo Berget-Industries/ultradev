@@ -1,5 +1,6 @@
+import { useState, useCallback, useEffect } from 'react'
 import { NavLink } from 'react-router-dom'
-import { Zap, LayoutDashboard, Clock, BarChart3 } from 'lucide-react'
+import { Zap, LayoutDashboard, Clock, BarChart3, Maximize, Minimize } from 'lucide-react'
 import { AgentIndicator } from '@/components/agents/AgentIndicator'
 import { MaintenanceToggle } from '@/components/layout/MaintenanceToggle'
 import { cn } from '@/lib/utils'
@@ -11,6 +12,22 @@ const navItems = [
 ]
 
 export function Shell({ children }: { children: React.ReactNode }) {
+  const [isFullscreen, setIsFullscreen] = useState(!!document.fullscreenElement)
+
+  const toggleFullscreen = useCallback(() => {
+    if (document.fullscreenElement) {
+      document.exitFullscreen()
+    } else {
+      document.documentElement.requestFullscreen()
+    }
+  }, [])
+
+  useEffect(() => {
+    const handler = () => setIsFullscreen(!!document.fullscreenElement)
+    document.addEventListener('fullscreenchange', handler)
+    return () => document.removeEventListener('fullscreenchange', handler)
+  }, [])
+
   return (
     <div className="flex flex-col h-screen">
       {/* Top bar */}
@@ -44,6 +61,14 @@ export function Shell({ children }: { children: React.ReactNode }) {
           <MaintenanceToggle />
           <div className="w-px h-5 bg-zinc-800" />
           <AgentIndicator />
+          <div className="w-px h-5 bg-zinc-800" />
+          <button
+            onClick={toggleFullscreen}
+            className="text-zinc-500 hover:text-zinc-300 transition-colors"
+            title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+          >
+            {isFullscreen ? <Minimize className="h-4 w-4" /> : <Maximize className="h-4 w-4" />}
+          </button>
         </div>
       </header>
       <main className="flex-1 overflow-auto p-4">{children}</main>

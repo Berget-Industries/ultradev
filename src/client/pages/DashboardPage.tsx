@@ -642,7 +642,6 @@ export default function DashboardPage() {
                       entry.source === 'notify' ? 'text-blue-400 border-blue-500/20' :
                       entry.source === 'poller' ? 'text-green-400 border-green-500/20' :
                       entry.source === 'pr-poller' ? 'text-purple-400 border-purple-500/20' :
-                      entry.source === 'review-poller' ? 'text-yellow-400 border-yellow-500/20' :
                       'text-zinc-400 border-zinc-500/20'
                     }`}>
                       {entry.source}

@@ -1,6 +1,5 @@
 import { startPolling, stopPolling, updatePollingInterval, getPollerState } from './github-poller.js'
 import { startPrPolling, stopPrPolling, updatePrPollingInterval, getPrPollerState } from './pr-poller.js'
-import { startReviewPolling, stopReviewPolling, updateReviewPollingInterval, getReviewPollerState } from './review-poller.js'
 import { startDiscordBot, getDiscordBotStatus } from './discord-bot.js'
 import { loadConfig } from './config.js'
 import { getMemoryState, getAllIssues, setIssueState } from './state.js'
@@ -125,7 +124,6 @@ export { getActivityLog }
 export {
   startPolling, stopPolling, updatePollingInterval,
   startPrPolling, stopPrPolling, updatePrPollingInterval,
-  startReviewPolling, stopReviewPolling, updateReviewPollingInterval,
 }
 
 export async function startOrchestrator() {
@@ -144,14 +142,12 @@ export async function startOrchestrator() {
 
   startPolling()
   startPrPolling()
-  startReviewPolling()
 
   // Auto-resume pollers after rate limit clears
   setOnResume(() => {
     console.log('[rate-limit] Auto-resuming all pollers')
     startPolling()
     startPrPolling()
-    startReviewPolling()
   })
 
   logActivity('system', 'Orchestrator started')
@@ -162,7 +158,7 @@ export function getOrchestratorState() {
   const config = loadConfig()
   const ghPoller = getPollerState()
   const prPoller = getPrPollerState()
-  const reviewPoller = getReviewPollerState()
+
   const discordStatus = getDiscordBotStatus()
   const issues = getAllIssues()
 
@@ -192,14 +188,6 @@ export function getOrchestratorState() {
         lastRun: prPoller.lastPollTime,
         status: prPoller.pollStatus,
         enabled: prPoller.enabled,
-      },
-      {
-        name: 'Work Reviewer',
-        schedule: 'Every 600s',
-        lastRun: reviewPoller.lastPollTime,
-        status: reviewPoller.pollStatus,
-        activeReview: reviewPoller.activeReview,
-        enabled: reviewPoller.enabled,
       },
     ],
     discord: {
