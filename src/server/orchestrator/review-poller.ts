@@ -7,6 +7,7 @@ import { getAllIssues, setIssueState } from './state.js'
 import { notify } from './notifier.js'
 import { isRateLimited } from './rate-limit.js'
 import { isWorkerSlotFree, claimWorkerSlot, releaseWorkerSlot } from './worker-lock.js'
+import { logActivity } from './activity-log.js'
 
 let lastPollTime: number | null = null
 let pollStatus: 'idle' | 'reviewing' | 'error' = 'idle'
@@ -79,6 +80,8 @@ export function pollForReviews() {
     !state.selfReviewed &&
     state.type !== 'pr' // don't review review-fix PRs
   )
+
+  logActivity('review-poller', `Checked — ${toReview.length} PR(s) pending self-review`)
 
   if (toReview.length === 0) {
     pollStatus = 'idle'

@@ -9,6 +9,7 @@ import { getRateLimitState, setOnResume } from './rate-limit.js'
 import { existsSync } from 'fs'
 import { execFileSync } from 'child_process'
 import { join } from 'path'
+import { logActivity, getActivityLog } from './activity-log.js'
 
 import { MAINTENANCE_FILE } from '../paths.js'
 const startedAt = Date.now()
@@ -120,6 +121,7 @@ function recoverStaleJobs() {
   }
 }
 
+export { getActivityLog }
 export {
   startPolling, stopPolling, updatePollingInterval,
   startPrPolling, stopPrPolling, updatePrPollingInterval,
@@ -152,6 +154,7 @@ export async function startOrchestrator() {
     startReviewPolling()
   })
 
+  logActivity('system', 'Orchestrator started')
   console.log('[ultradev] Orchestrator running.')
 }
 

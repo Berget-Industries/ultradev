@@ -363,6 +363,7 @@ export default function DashboardPage() {
   const [stats, setStats] = useState<StatsData | null>(null)
   const [viewingLog, setViewingLog] = useState<WorkItem | null>(null)
   const [openIssues, setOpenIssues] = useState<OpenIssue[]>([])
+  const [activityLog, setActivityLog] = useState<{ ts: number; source: string; message: string }[]>([])
   const sseRef = useRef<EventSource | null>(null)
 
   // SSE connection for real-time orchestrator state
@@ -400,6 +401,14 @@ export default function DashboardPage() {
     const poll = () => api.get<OpenIssue[]>('/issues').then(setOpenIssues).catch(() => {})
     poll()
     const id = setInterval(poll, 60_000)
+    return () => clearInterval(id)
+  }, [])
+
+  // Poll activity log every 10s
+  useEffect(() => {
+    const poll = () => api.get<{ ts: number; source: string; message: string }[]>('/orchestrator/activity?limit=50').then(setActivityLog).catch(() => {})
+    poll()
+    const id = setInterval(poll, 10_000)
     return () => clearInterval(id)
   }, [])
 
@@ -512,6 +521,141 @@ export default function DashboardPage() {
           </div>
         </Card>
       )}
+
+      {/* ---- Open Issues + Activity Log (2-col) ---- */}
+      <div className="grid grid-cols-2 gap-4">
+      <div>
+        <div className="flex items-center gap-1.5 mb-2">
+          <GitBranch className="h-4 w-4 text-zinc-400" />
+          <span className="text-sm font-medium text-zinc-300">Open Issues</span>
+          <Badge variant="outline" className="text-[10px] px-1.5 py-0 bg-zinc-500/10 text-zinc-400 border-zinc-500/20 ml-1">
+            {openIssues.length}
+          </Badge>
+        </div>
+
+        {openIssues.length === 0 ? (
+          <Card className="p-4">
+            <div className="flex items-center justify-center gap-2 text-zinc-600 text-sm">
+              <Inbox className="h-4 w-4" />
+              No open issues assigned.
+            </div>
+          </Card>
+        ) : (
+          <Card className="p-0 overflow-hidden">
+            <ScrollArea className="max-h-[200px]">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="text-xs">Issue</TableHead>
+                    <TableHead className="text-xs">Labels</TableHead>
+                    <TableHead className="text-xs">PR</TableHead>
+                    <TableHead className="text-xs">CI</TableHead>
+                    <TableHead className="text-xs">Review</TableHead>
+                    <TableHead className="text-xs">Status</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {openIssues.map((issue) => (
+                    <TableRow key={`${issue.repo}#${issue.number}`}>
+                      <TableCell className="max-w-[300px]">
+                        <a
+                          href={`https://github.com/${issue.repo}/issues/${issue.number}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex items-center gap-1.5 text-xs hover:underline group"
+                        >
+                          <span className="font-mono text-zinc-500 shrink-0">
+                            {issue.repo.split('/')[1]}#{issue.number}
+                          </span>
+                          <span className="text-zinc-300 truncate group-hover:text-blue-400">{issue.title}</span>
+                          <ExternalLink className="h-3 w-3 text-zinc-600 shrink-0 opacity-0 group-hover:opacity-100" />
+                        </a>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex gap-1 flex-wrap">
+                          {issue.labels.length > 0 ? (
+                            issue.labels.map((label) => (
+                              <Badge key={label} variant="outline" className="text-[10px] px-1.5 py-0 bg-zinc-500/10 text-zinc-400 border-zinc-500/20">
+                                {label}
+                              </Badge>
+                            ))
+                          ) : (
+                            <span className="text-zinc-700">&mdash;</span>
+                          )}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        {issue.linkedPr ? (
+                          <a
+                            href={issue.linkedPr.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 text-xs text-blue-400 hover:underline"
+                          >
+                            #{issue.linkedPr.number}
+                            <ExternalLink className="h-3 w-3" />
+                          </a>
+                        ) : (
+                          <span className="text-zinc-700">&mdash;</span>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        <OpenIssueCiCell ci={issue.linkedPr?.ciStatus ?? null} />
+                      </TableCell>
+                      <TableCell>
+                        <OpenIssueReviewCell review={issue.linkedPr?.reviewDecision ?? null} />
+                      </TableCell>
+                      <TableCell>
+                        <OpenIssueStatusBadge status={issue.status} />
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </ScrollArea>
+          </Card>
+        )}
+      </div>
+
+      {/* ---- Activity Log ---- */}
+      <div>
+        <div className="flex items-center gap-1.5 mb-2">
+          <Radio className="h-4 w-4 text-zinc-400" />
+          <span className="text-sm font-medium text-zinc-300">Activity Log</span>
+          <span className="text-xs font-mono text-zinc-600 ml-1">{activityLog.length}</span>
+        </div>
+        <Card className="p-0 overflow-hidden">
+          <ScrollArea className="max-h-[200px]">
+            <div className="divide-y divide-zinc-800/50">
+              {activityLog.length === 0 ? (
+                <div className="flex items-center justify-center gap-2 text-zinc-600 text-sm p-4">
+                  <Inbox className="h-4 w-4" />
+                  No activity yet.
+                </div>
+              ) : (
+                activityLog.map((entry, i) => (
+                  <div key={`${entry.ts}-${i}`} className="px-3 py-1.5 flex items-start gap-2 text-xs">
+                    <span className="font-mono text-zinc-600 shrink-0 tabular-nums">
+                      {new Date(entry.ts).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                    </span>
+                    <Badge variant="outline" className={`text-[10px] px-1.5 py-0 shrink-0 ${
+                      entry.source === 'notify' ? 'text-blue-400 border-blue-500/20' :
+                      entry.source === 'poller' ? 'text-green-400 border-green-500/20' :
+                      entry.source === 'pr-poller' ? 'text-purple-400 border-purple-500/20' :
+                      entry.source === 'review-poller' ? 'text-yellow-400 border-yellow-500/20' :
+                      'text-zinc-400 border-zinc-500/20'
+                    }`}>
+                      {entry.source}
+                    </Badge>
+                    <span className="text-zinc-300 break-words min-w-0">{entry.message}</span>
+                  </div>
+                ))
+              )}
+            </div>
+          </ScrollArea>
+        </Card>
+      </div>
+      </div>
 
       {/* ---- Active Work ---- */}
       <div>
@@ -705,100 +849,6 @@ export default function DashboardPage() {
                 ))}
               </TableBody>
             </Table>
-          </Card>
-        )}
-      </div>
-
-      {/* ---- Open Issues ---- */}
-      <div>
-        <div className="flex items-center gap-1.5 mb-2">
-          <GitBranch className="h-4 w-4 text-zinc-400" />
-          <span className="text-sm font-medium text-zinc-300">Open Issues</span>
-          <Badge variant="outline" className="text-[10px] px-1.5 py-0 bg-zinc-500/10 text-zinc-400 border-zinc-500/20 ml-1">
-            {openIssues.length}
-          </Badge>
-        </div>
-
-        {openIssues.length === 0 ? (
-          <Card className="p-4">
-            <div className="flex items-center justify-center gap-2 text-zinc-600 text-sm">
-              <Inbox className="h-4 w-4" />
-              No open issues assigned.
-            </div>
-          </Card>
-        ) : (
-          <Card className="p-0 overflow-hidden">
-            <ScrollArea className="max-h-[400px]">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="text-xs">Issue</TableHead>
-                    <TableHead className="text-xs">Labels</TableHead>
-                    <TableHead className="text-xs">PR</TableHead>
-                    <TableHead className="text-xs">CI</TableHead>
-                    <TableHead className="text-xs">Review</TableHead>
-                    <TableHead className="text-xs">Status</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {openIssues.map((issue) => (
-                    <TableRow key={`${issue.repo}#${issue.number}`}>
-                      <TableCell className="max-w-[300px]">
-                        <a
-                          href={`https://github.com/${issue.repo}/issues/${issue.number}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="flex items-center gap-1.5 text-xs hover:underline group"
-                        >
-                          <span className="font-mono text-zinc-500 shrink-0">
-                            {issue.repo.split('/')[1]}#{issue.number}
-                          </span>
-                          <span className="text-zinc-300 truncate group-hover:text-blue-400">{issue.title}</span>
-                          <ExternalLink className="h-3 w-3 text-zinc-600 shrink-0 opacity-0 group-hover:opacity-100" />
-                        </a>
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex gap-1 flex-wrap">
-                          {issue.labels.length > 0 ? (
-                            issue.labels.map((label) => (
-                              <Badge key={label} variant="outline" className="text-[10px] px-1.5 py-0 bg-zinc-500/10 text-zinc-400 border-zinc-500/20">
-                                {label}
-                              </Badge>
-                            ))
-                          ) : (
-                            <span className="text-zinc-700">&mdash;</span>
-                          )}
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        {issue.linkedPr ? (
-                          <a
-                            href={issue.linkedPr.url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1 text-xs text-blue-400 hover:underline"
-                          >
-                            #{issue.linkedPr.number}
-                            <ExternalLink className="h-3 w-3" />
-                          </a>
-                        ) : (
-                          <span className="text-zinc-700">&mdash;</span>
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        <OpenIssueCiCell ci={issue.linkedPr?.ciStatus ?? null} />
-                      </TableCell>
-                      <TableCell>
-                        <OpenIssueReviewCell review={issue.linkedPr?.reviewDecision ?? null} />
-                      </TableCell>
-                      <TableCell>
-                        <OpenIssueStatusBadge status={issue.status} />
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </ScrollArea>
           </Card>
         )}
       </div>

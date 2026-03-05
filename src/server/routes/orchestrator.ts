@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import {
   getOrchestratorState,
+  getActivityLog,
   startPolling, stopPolling, updatePollingInterval,
   startPrPolling, stopPrPolling, updatePrPollingInterval,
   startReviewPolling, stopReviewPolling, updateReviewPollingInterval,
@@ -36,6 +37,11 @@ router.get('/live', (req, res) => {
 
 router.get('/', (_req, res) => {
   res.json(getOrchestratorState())
+})
+
+router.get('/activity', (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 50, 200)
+  res.json(getActivityLog(limit))
 })
 
 router.put('/jobs/:name', (req, res) => {

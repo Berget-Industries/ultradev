@@ -1,4 +1,5 @@
 import type { Client, TextChannel } from 'discord.js'
+import { logActivity } from './activity-log.js'
 
 let discordClient: Client | null = null
 let channelId: string | null = null
@@ -10,6 +11,7 @@ export function setDiscordClient(client: Client, chId: string) {
 
 export async function notify(message: string) {
   console.log(`[notify] ${message}`)
+  logActivity('notify', message)
 
   if (!discordClient || !channelId) return
 

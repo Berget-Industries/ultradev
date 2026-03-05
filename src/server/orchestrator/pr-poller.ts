@@ -8,6 +8,7 @@ import { makeLogPath } from './worker.js'
 import { notify } from './notifier.js'
 import { isRateLimited } from './rate-limit.js'
 import { isWorkerSlotFree, claimWorkerSlot, releaseWorkerSlot } from './worker-lock.js'
+import { logActivity } from './activity-log.js'
 
 const MAX_ATTEMPTS = 3
 let lastPollTime: number | null = null
@@ -76,15 +77,26 @@ export function pollPrReviews() {
     pollStatus = 'idle'
 
     const prs = JSON.parse(raw)
+    logActivity('pr-poller', `Polled PRs — ${prs.length} with changes requested`)
     if (prs.length === 0) return
 
     for (const pr of prs) {
       const repo = pr.repository.nameWithOwner
       const key = `pr:${repo}#${pr.number}`
-      const state = getIssueState(key)
+      let state = getIssueState(key)
 
-      // Skip if already handled
-      if (state?.status === 'done') continue
+      // If marked done but GitHub still shows changes_requested,
+      // check if there's a genuinely NEW review we haven't addressed yet
+      if (state?.status === 'done') {
+        const latestReviewAt = getLatestReviewTimestamp(repo, pr.number)
+        if (!latestReviewAt || (state.lastReviewAt && latestReviewAt <= state.lastReviewAt)) {
+          // No new review since we last addressed it — skip
+          continue
+        }
+        console.log(`[pr-poller] ${key} has new review feedback (${latestReviewAt}) — resetting for another round`)
+        setIssueState(key, { status: 'pending', attempts: 0, notifiedMaxRetries: false })
+        state = getIssueState(key)
+      }
       if (state?.status === 'in_progress') {
         if (Date.now() - (state.updatedAt || 0) > 20 * 60 * 1000) {
           setIssueState(key, { status: 'failed', error: 'Timed out (stuck)' })
@@ -110,14 +122,32 @@ export function pollPrReviews() {
     }
   } catch (err: any) {
     console.error('[pr-poller] Error polling PR reviews:', err.message)
+    logActivity('pr-poller', `Error: ${err.message}`)
     pollStatus = 'error'
     lastPollTime = Date.now()
+  }
+}
+
+/** Get the ISO timestamp of the most recent CHANGES_REQUESTED review on a PR */
+function getLatestReviewTimestamp(repo: string, prNum: number): string | null {
+  try {
+    const raw = execFileSync('gh', [
+      'pr', 'view', String(prNum), '--repo', repo,
+      '--json', 'reviews',
+      '--jq', '[.reviews[] | select(.state=="CHANGES_REQUESTED") | .submittedAt] | sort | last',
+    ], { encoding: 'utf-8', timeout: 15000 })
+    const ts = raw.trim()
+    return ts || null
+  } catch {
+    return null
   }
 }
 
 async function handlePrReview(repo: string, prSummary: any, config: any, state: any) {
   const prNum = prSummary.number
   const key = `pr:${repo}#${prNum}`
+  // Capture the latest review timestamp so we can record what we addressed
+  const reviewTimestamp = getLatestReviewTimestamp(repo, prNum)
 
   try {
     // Get full PR details
@@ -169,10 +199,10 @@ async function handlePrReview(repo: string, prSummary: any, config: any, state: 
     const result = await spawnPrWorker(repo, pr, reviews, reviewComments, config, logFile)
 
     if (result.success && result.prUrl) {
-      setIssueState(key, { status: 'done', prUrl: result.prUrl, logFile: result.logFile })
+      setIssueState(key, { status: 'done', prUrl: result.prUrl, logFile: result.logFile, lastReviewAt: reviewTimestamp || undefined })
       notify(`✅ **${repo}#${prNum}** — Review feedback pushed to PR: ${result.prUrl}`)
     } else if (result.success) {
-      setIssueState(key, { status: 'done', logFile: result.logFile })
+      setIssueState(key, { status: 'done', logFile: result.logFile, lastReviewAt: reviewTimestamp || undefined })
       notify(`✅ **${repo}#${prNum}** — Changes addressed (no new commits detected).`)
     } else if (result.partial) {
       setIssueState(key, { status: 'failed', error: result.error, madeProgress: true, logFile: result.logFile })

@@ -7,6 +7,7 @@ import { getIssueState, setIssueState } from './state.js'
 import { notify } from './notifier.js'
 import { isRateLimited } from './rate-limit.js'
 import { isWorkerSlotFree, claimWorkerSlot, releaseWorkerSlot } from './worker-lock.js'
+import { logActivity } from './activity-log.js'
 
 const MAX_ATTEMPTS = 3
 let lastPollTime: number | null = null
@@ -73,6 +74,7 @@ export function pollGitHub() {
     const issues = JSON.parse(raw)
     lastPollTime = Date.now()
     pollStatus = 'idle'
+    logActivity('poller', `Polled GitHub — ${issues.length} open issue(s) found`)
 
     for (const issue of issues) {
       const key = `${issue.repository.nameWithOwner}#${issue.number}`
@@ -116,6 +118,7 @@ export function pollGitHub() {
     }
   } catch (err: any) {
     console.error('[poller] Error polling GitHub:', err.message)
+    logActivity('poller', `Error: ${err.message}`)
     pollStatus = 'error'
     lastPollTime = Date.now()
   }

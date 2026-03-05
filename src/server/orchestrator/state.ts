@@ -19,6 +19,7 @@ export interface IssueState {
   selfReviewed?: boolean
   logFile?: string
   updatedAt?: number
+  lastReviewAt?: string  // ISO timestamp of the latest review we addressed
 }
 
 interface State {
