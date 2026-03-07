@@ -8,6 +8,7 @@ import { notify } from './notifier.js'
 import { isRateLimited } from './rate-limit.js'
 import { isWorkerSlotFree, claimWorkerSlot, releaseWorkerSlot } from './worker-lock.js'
 import { logActivity } from './activity-log.js'
+import { isRepoAllowed } from './allowed-repos.js'
 
 const MAX_ATTEMPTS = 3
 let lastPollTime: number | null = null
@@ -77,7 +78,10 @@ export function pollGitHub() {
     logActivity('poller', `Polled GitHub — ${issues.length} open issue(s) found`)
 
     for (const issue of issues) {
-      const key = `${issue.repository.nameWithOwner}#${issue.number}`
+      const repo = issue.repository.nameWithOwner
+      if (!isRepoAllowed(repo)) continue
+
+      const key = `${repo}#${issue.number}`
       const state = getIssueState(key)
 
       if (state?.status === 'done') continue

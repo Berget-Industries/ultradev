@@ -1,4 +1,4 @@
-import { ExternalLink, Pencil, Trash2 } from 'lucide-react'
+import { ExternalLink, Pencil, Trash2, Clock } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table'
@@ -23,6 +23,7 @@ export function ProjectList({ projects, onEdit, onDelete }: Props) {
         <TableRow>
           <TableHead>Name</TableHead>
           <TableHead>Repo</TableHead>
+          <TableHead>Crons</TableHead>
           <TableHead>Status</TableHead>
           <TableHead>Description</TableHead>
           <TableHead className="w-24">Actions</TableHead>
@@ -31,7 +32,7 @@ export function ProjectList({ projects, onEdit, onDelete }: Props) {
       <TableBody>
         {projects.length === 0 && (
           <TableRow>
-            <TableCell colSpan={5} className="text-center text-muted-foreground py-8">
+            <TableCell colSpan={6} className="text-center text-muted-foreground py-8">
               No projects yet. Create one to get started.
             </TableCell>
           </TableRow>
@@ -47,6 +48,16 @@ export function ProjectList({ projects, onEdit, onDelete }: Props) {
                 </a>
               ) : (
                 <span className="text-muted-foreground">-</span>
+              )}
+            </TableCell>
+            <TableCell>
+              {p.cronjob_ids?.length > 0 ? (
+                <Badge variant="outline" className="text-xs gap-1">
+                  <Clock className="h-3 w-3" />
+                  {p.cronjob_ids.length}
+                </Badge>
+              ) : (
+                <span className="text-muted-foreground text-xs">none</span>
               )}
             </TableCell>
             <TableCell>

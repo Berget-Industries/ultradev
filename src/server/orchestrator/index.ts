@@ -12,6 +12,7 @@ import { join } from 'path'
 import { logActivity, getActivityLog } from './activity-log.js'
 
 import { MAINTENANCE_FILE } from '../paths.js'
+import { getAllowedRepos } from './allowed-repos.js'
 const startedAt = Date.now()
 
 // --- CI Checks cache (30s TTL) ---
@@ -165,6 +166,8 @@ export function getOrchestratorState() {
   const discordStatus = getDiscordBotStatus()
   const issues = getAllIssues()
 
+  const allowed = getAllowedRepos()
+
   return {
     uptime: Math.floor((Date.now() - startedAt) / 1000),
     maintenance: existsSync(MAINTENANCE_FILE),
@@ -176,6 +179,7 @@ export function getOrchestratorState() {
       discordEnabled: config.discord.enabled,
       discordConnected: discordStatus === 'online',
     },
+    allowedRepos: allowed ? [...allowed] : null,
     jobs: [
       {
         name: 'Issue Poller',

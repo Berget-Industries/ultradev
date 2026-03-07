@@ -9,6 +9,7 @@ import { notify } from './notifier.js'
 import { isRateLimited } from './rate-limit.js'
 import { isWorkerSlotFree, claimWorkerSlot, releaseWorkerSlot } from './worker-lock.js'
 import { logActivity } from './activity-log.js'
+import { isRepoAllowed } from './allowed-repos.js'
 
 const MAX_ATTEMPTS = 3
 let lastPollTime: number | null = null
@@ -82,6 +83,8 @@ export function pollPrReviews() {
 
     for (const pr of prs) {
       const repo = pr.repository.nameWithOwner
+      if (!isRepoAllowed(repo)) continue
+
       const key = `pr:${repo}#${pr.number}`
       let state = getIssueState(key)
 

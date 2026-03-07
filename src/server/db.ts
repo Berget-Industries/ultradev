@@ -47,6 +47,12 @@ db.exec(`
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
+
+  CREATE TABLE IF NOT EXISTS project_cronjobs (
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    cronjob_id INTEGER NOT NULL REFERENCES cronjobs(id) ON DELETE CASCADE,
+    PRIMARY KEY (project_id, cronjob_id)
+  );
 `)
 
 export default db

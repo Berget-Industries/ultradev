@@ -2,15 +2,19 @@ import { useEffect, useState } from 'react'
 import { Plus } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ProjectList } from '@/components/projects/ProjectList'
-import { ProjectForm, type Project } from '@/components/projects/ProjectForm'
+import { ProjectForm, type Project, type CronjobOption } from '@/components/projects/ProjectForm'
 import { api } from '@/lib/api'
 
 export default function ProjectsPage() {
   const [projects, setProjects] = useState<Project[]>([])
+  const [cronjobs, setCronjobs] = useState<CronjobOption[]>([])
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editing, setEditing] = useState<Project | null>(null)
 
-  const load = () => api.get<Project[]>('/projects').then(setProjects)
+  const load = () => {
+    api.get<Project[]>('/projects').then(setProjects)
+    api.get<CronjobOption[]>('/cronjobs').then(setCronjobs)
+  }
 
   useEffect(() => { load() }, [])
 
@@ -37,9 +41,9 @@ export default function ProjectsPage() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Projects</h1>
+        <h1 className="text-2xl font-bold">Repos</h1>
         <Button onClick={() => { setEditing(null); setDialogOpen(true) }}>
-          <Plus className="h-4 w-4" /> New Project
+          <Plus className="h-4 w-4" /> New Repo
         </Button>
       </div>
       <ProjectList projects={projects} onEdit={handleEdit} onDelete={handleDelete} />
@@ -47,6 +51,7 @@ export default function ProjectsPage() {
         open={dialogOpen}
         onOpenChange={setDialogOpen}
         project={editing}
+        cronjobs={cronjobs}
         onSubmit={handleSubmit}
       />
     </div>
