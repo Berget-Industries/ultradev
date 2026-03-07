@@ -3,6 +3,7 @@ import { readdirSync, readFileSync, statSync } from 'fs'
 import { join } from 'path'
 import { loadConfig } from '../orchestrator/config.js'
 import { DATA_DIR } from '../paths.js'
+import { cached } from '../cache.js'
 
 const router = Router()
 
@@ -189,76 +190,80 @@ function loadState(): Record<string, any> {
   }
 }
 
-router.get('/', (_req, res) => {
-  try {
-    const files = readdirSync(LOGS_DIR).filter(f => f.endsWith('.log') && !f.startsWith('review_') && !f.startsWith('oom-'))
-    const state = loadState()
+function computeUsage(): UsageResponse {
+  const files = readdirSync(LOGS_DIR).filter(f => f.endsWith('.log') && !f.startsWith('review_') && !f.startsWith('oom-'))
+  const state = loadState()
 
-    const tasks: TaskUsage[] = []
+  const tasks: TaskUsage[] = []
 
-    for (const file of files) {
-      const fullPath = join(LOGS_DIR, file)
-      const result = parseLogForUsage(fullPath, file)
-      if (result && result.totalTokens > 0) {
-        // Enrich status from state
-        if (state.issues) {
-          for (const [_key, val] of Object.entries(state.issues) as [string, any][]) {
-            if (val.logFile === fullPath) {
-              result.status = val.status || result.status
-              break
-            }
+  for (const file of files) {
+    const fullPath = join(LOGS_DIR, file)
+    const result = parseLogForUsage(fullPath, file)
+    if (result && result.totalTokens > 0) {
+      // Enrich status from state
+      if (state.issues) {
+        for (const [_key, val] of Object.entries(state.issues) as [string, any][]) {
+          if (val.logFile === fullPath) {
+            result.status = val.status || result.status
+            break
           }
         }
-        tasks.push(result)
       }
+      tasks.push(result)
     }
+  }
 
-    // Sort by timestamp desc
-    tasks.sort((a, b) => b.timestamp - a.timestamp)
+  // Sort by timestamp desc
+  tasks.sort((a, b) => b.timestamp - a.timestamp)
 
-    // Today's stats
-    const todayStr = new Date().toISOString().slice(0, 10)
-    const todayTasks = tasks.filter(t => t.date === todayStr)
+  // Today's stats
+  const todayStr = new Date().toISOString().slice(0, 10)
+  const todayTasks = tasks.filter(t => t.date === todayStr)
 
-    const today = {
-      inputTokens: todayTasks.reduce((s, t) => s + t.inputTokens, 0),
-      outputTokens: todayTasks.reduce((s, t) => s + t.outputTokens, 0),
-      totalTokens: todayTasks.reduce((s, t) => s + t.totalTokens, 0),
-      costUsd: todayTasks.reduce((s, t) => s + (t.costUsd || 0), 0),
-      taskCount: todayTasks.length,
+  const today = {
+    inputTokens: todayTasks.reduce((s, t) => s + t.inputTokens, 0),
+    outputTokens: todayTasks.reduce((s, t) => s + t.outputTokens, 0),
+    totalTokens: todayTasks.reduce((s, t) => s + t.totalTokens, 0),
+    costUsd: todayTasks.reduce((s, t) => s + (t.costUsd || 0), 0),
+    taskCount: todayTasks.length,
+  }
+
+  const allTime = {
+    inputTokens: tasks.reduce((s, t) => s + t.inputTokens, 0),
+    outputTokens: tasks.reduce((s, t) => s + t.outputTokens, 0),
+    totalTokens: tasks.reduce((s, t) => s + t.totalTokens, 0),
+    costUsd: tasks.reduce((s, t) => s + (t.costUsd || 0), 0),
+    taskCount: tasks.length,
+  }
+
+  // Daily aggregation (last 14 days)
+  const dailyMap = new Map<string, DailyUsage>()
+  for (let i = 0; i < 14; i++) {
+    const d = new Date()
+    d.setDate(d.getDate() - i)
+    const ds = d.toISOString().slice(0, 10)
+    dailyMap.set(ds, { date: ds, inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0, taskCount: 0 })
+  }
+
+  for (const t of tasks) {
+    const day = dailyMap.get(t.date)
+    if (day) {
+      day.inputTokens += t.inputTokens
+      day.outputTokens += t.outputTokens
+      day.totalTokens += t.totalTokens
+      day.costUsd += t.costUsd || 0
+      day.taskCount++
     }
+  }
 
-    const allTime = {
-      inputTokens: tasks.reduce((s, t) => s + t.inputTokens, 0),
-      outputTokens: tasks.reduce((s, t) => s + t.outputTokens, 0),
-      totalTokens: tasks.reduce((s, t) => s + t.totalTokens, 0),
-      costUsd: tasks.reduce((s, t) => s + (t.costUsd || 0), 0),
-      taskCount: tasks.length,
-    }
+  const daily = [...dailyMap.values()].sort((a, b) => a.date.localeCompare(b.date))
 
-    // Daily aggregation (last 14 days)
-    const dailyMap = new Map<string, DailyUsage>()
-    for (let i = 0; i < 14; i++) {
-      const d = new Date()
-      d.setDate(d.getDate() - i)
-      const ds = d.toISOString().slice(0, 10)
-      dailyMap.set(ds, { date: ds, inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0, taskCount: 0 })
-    }
+  return { today, allTime, daily, tasks }
+}
 
-    for (const t of tasks) {
-      const day = dailyMap.get(t.date)
-      if (day) {
-        day.inputTokens += t.inputTokens
-        day.outputTokens += t.outputTokens
-        day.totalTokens += t.totalTokens
-        day.costUsd += t.costUsd || 0
-        day.taskCount++
-      }
-    }
-
-    const daily = [...dailyMap.values()].sort((a, b) => a.date.localeCompare(b.date))
-
-    const response: UsageResponse = { today, allTime, daily, tasks }
+router.get('/', async (_req, res) => {
+  try {
+    const response = await cached<UsageResponse>('usage:all', 60, computeUsage)
     res.json(response)
   } catch (err) {
     console.error('[usage] Error:', err)

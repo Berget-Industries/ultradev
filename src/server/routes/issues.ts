@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import { execFileSync } from 'child_process'
+import { cached } from '../cache.js'
 
 const router = Router()
 
@@ -21,10 +22,7 @@ interface OpenIssue {
   status: 'no_pr' | 'ci_pending' | 'ci_failing' | 'changes_requested' | 'ready_to_merge' | 'merged'
 }
 
-// Simple cache
-let cachedResult: OpenIssue[] | null = null
-let cachedAt = 0
-const CACHE_TTL = 60_000 // 60 seconds
+// Legacy in-memory cache removed — now uses Redis via cached()
 
 function gh(...args: string[]): string {
   try {
@@ -156,14 +154,7 @@ async function fetchIssues(): Promise<OpenIssue[]> {
 
 router.get('/', async (_req, res) => {
   try {
-    const now = Date.now()
-    if (cachedResult && now - cachedAt < CACHE_TTL) {
-      return res.json(cachedResult)
-    }
-
-    const issues = await fetchIssues()
-    cachedResult = issues
-    cachedAt = Date.now()
+    const issues = await cached<OpenIssue[]>('issues:open', 60, fetchIssues)
     res.json(issues)
   } catch (err: any) {
     console.error('[issues] Error fetching issues:', err)

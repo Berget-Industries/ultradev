@@ -1,4 +1,3 @@
-import { useEffect, useState } from 'react'
 import {
   DollarSign,
   Hash,
@@ -20,6 +19,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { api } from '@/lib/api'
+import { useStore } from '@/lib/store'
 
 // --- Types ---
 
@@ -245,27 +245,7 @@ function StatCard({
 // --- Main Component ---
 
 export default function UsagePage() {
-  const [data, setData] = useState<UsageData | null>(null)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    const load = () => {
-      api.get<UsageData>('/usage')
-        .then(setData)
-        .catch(err => setError(err.message))
-    }
-    load()
-    const id = setInterval(load, 30_000) // refresh every 30s
-    return () => clearInterval(id)
-  }, [])
-
-  if (error) {
-    return (
-      <div className="flex items-center justify-center h-64 text-red-400 text-sm">
-        Failed to load usage data: {error}
-      </div>
-    )
-  }
+  const { data, loading } = useStore<UsageData>('/usage', () => api.get('/usage'), { ttl: 60_000, pollInterval: 60_000 })
 
   if (!data) {
     return (

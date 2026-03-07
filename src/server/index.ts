@@ -11,11 +11,17 @@ import maintenanceRouter from './routes/maintenance.js'
 import usageRouter from './routes/usage.js'
 import issuesRouter from './routes/issues.js'
 import { startOrchestrator } from './orchestrator/index.js'
+import { getRedis, isRedisConnected } from './cache.js'
 
 const app = express()
 const PORT = parseInt(process.env.PORT || '4800', 10)
 
 app.use(express.json())
+
+// Cache status endpoint
+app.get('/api/cache/status', (_req, res) => {
+  res.json({ redis: isRedisConnected() })
+})
 
 // API routes
 app.use('/api/projects', projectsRouter)
@@ -36,6 +42,9 @@ async function start() {
     appType: 'spa',
   })
   app.use(vite.middlewares)
+
+  // Initialize Redis connection
+  getRedis()
 
   app.listen(PORT, '127.0.0.1', () => {
     console.log(`UltraDev Dashboard running at http://127.0.0.1:${PORT}`)

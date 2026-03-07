@@ -158,7 +158,11 @@ export async function startOrchestrator() {
   console.log('[ultradev] Orchestrator running.')
 }
 
-export function getOrchestratorState() {
+// --- Cached orchestrator state (avoid recomputing on every request/SSE tick) ---
+let orchestratorCache: { data: ReturnType<typeof computeOrchestratorState>; ts: number } | null = null
+const ORCHESTRATOR_CACHE_TTL = 5_000 // 5 seconds
+
+function computeOrchestratorState() {
   const config = loadConfig()
   const ghPoller = getPollerState()
   const prPoller = getPrPollerState()
@@ -253,4 +257,19 @@ export function getOrchestratorState() {
       }
     }),
   }
+}
+
+export function getOrchestratorState() {
+  const now = Date.now()
+  if (orchestratorCache && now - orchestratorCache.ts < ORCHESTRATOR_CACHE_TTL) {
+    return orchestratorCache.data
+  }
+  const data = computeOrchestratorState()
+  orchestratorCache = { data, ts: now }
+  return data
+}
+
+/** Invalidate the orchestrator cache (call after mutations like requeue) */
+export function invalidateOrchestratorCache() {
+  orchestratorCache = null
 }
