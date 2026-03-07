@@ -538,7 +538,7 @@ export default function DashboardPage() {
           </Card>
         ) : (
           <Card className="p-0 overflow-hidden">
-            <ScrollArea className="h-[300px]">
+            <ScrollArea className="h-[200px]">
               <Table>
                 <TableHeader className="sticky top-0 z-10 bg-zinc-950">
                   <TableRow>
