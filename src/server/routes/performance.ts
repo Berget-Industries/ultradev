@@ -74,8 +74,11 @@ interface PerformanceStats {
   avgTokensPerTask: number
   avgToolCallsPerTask: number
   prsPerHour: number | null
+  prsPerDay: number | null
+  prsPerWeek: number | null
   tasksPerHour: number | null
   tasksPerDay: number | null
+  tasksPerWeek: number | null
   repos: { name: string; tasks: number; prs: number; successRate: number }[]
   daily: {
     date: string
@@ -167,16 +170,27 @@ function computePerformance(): PerformanceStats {
   const totalTasks = allTasks.length
 
   let prsPerHour: number | null = null
+  let prsPerDay: number | null = null
+  let prsPerWeek: number | null = null
   let tasksPerHour: number | null = null
   let tasksPerDay: number | null = null
+  let tasksPerWeek: number | null = null
   if (earliestTs && latestTs && latestTs > earliestTs) {
     const spanHours = (latestTs - earliestTs) / 3_600_000
     const spanDays = spanHours / 24
+    const spanWeeks = spanDays / 7
     if (spanHours > 0) {
       prsPerHour = Math.round((prsOpened / spanHours) * 100) / 100
       tasksPerHour = Math.round((totalTasks / spanHours) * 100) / 100
     }
-    if (spanDays > 0) tasksPerDay = Math.round((totalTasks / spanDays) * 100) / 100
+    if (spanDays > 0) {
+      prsPerDay = Math.round((prsOpened / spanDays) * 100) / 100
+      tasksPerDay = Math.round((totalTasks / spanDays) * 100) / 100
+    }
+    if (spanWeeks > 0) {
+      prsPerWeek = Math.round((prsOpened / spanWeeks) * 100) / 100
+      tasksPerWeek = Math.round((totalTasks / spanWeeks) * 100) / 100
+    }
   }
 
   const repos = [...repoMap.entries()]
@@ -212,8 +226,11 @@ function computePerformance(): PerformanceStats {
     avgTokensPerTask: totalTasks > 0 ? Math.round(totalTokens / totalTasks) : 0,
     avgToolCallsPerTask: totalTasks > 0 ? Math.round(totalToolCalls / totalTasks) : 0,
     prsPerHour,
+    prsPerDay,
+    prsPerWeek,
     tasksPerHour,
     tasksPerDay,
+    tasksPerWeek,
     repos,
     daily: dailyArr,
   }

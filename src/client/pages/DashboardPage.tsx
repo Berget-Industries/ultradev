@@ -166,8 +166,11 @@ interface PerformanceData {
   avgTokensPerTask: number
   avgToolCallsPerTask: number
   prsPerHour: number | null
+  prsPerDay: number | null
+  prsPerWeek: number | null
   tasksPerHour: number | null
   tasksPerDay: number | null
+  tasksPerWeek: number | null
   repos: { name: string; tasks: number; prs: number; successRate: number }[]
   daily: {
     date: string
@@ -401,7 +404,7 @@ function LiveDuration({ updatedAt, durationMs }: { updatedAt: number | null; dur
 
 // --- Perf Stat Cell ---
 
-function PerfStat({ icon: Icon, label, value, sub, color }: { icon: typeof Zap; label: string; value: string; sub?: string; color: string }) {
+function PerfStat({ icon: Icon, label, value, sub, rates, color }: { icon: typeof Zap; label: string; value: string; sub?: string; rates?: { label: string; value: string }[]; color: string }) {
   return (
     <Card className="p-3 flex flex-col gap-1">
       <div className="flex items-center gap-1.5">
@@ -410,6 +413,16 @@ function PerfStat({ icon: Icon, label, value, sub, color }: { icon: typeof Zap; 
       </div>
       <span className={`text-2xl font-bold font-mono leading-none ${color}`}>{value}</span>
       {sub && <span className="text-xs text-zinc-500 font-mono">{sub}</span>}
+      {rates && (
+        <div className="flex gap-3 mt-1 pt-1 border-t border-zinc-800">
+          {rates.map((r) => (
+            <div key={r.label} className="flex flex-col">
+              <span className="text-xs font-mono text-zinc-400">{r.value}</span>
+              <span className="text-[10px] text-zinc-600">{r.label}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </Card>
   )
 }
@@ -582,14 +595,13 @@ export default function DashboardPage() {
             <span className="text-sm font-medium text-zinc-300">Performance</span>
           </div>
           <div className="grid grid-cols-3 lg:grid-cols-5 gap-2">
-            <PerfStat icon={GitPullRequest} label="PRs/h" value={perfData.prsPerHour !== null ? String(perfData.prsPerHour) : '--'} sub={`${perfData.prsOpened} total`} color="text-cyan-400" />
-            <PerfStat icon={Zap} label="Tasks/h" value={perfData.tasksPerHour !== null ? String(perfData.tasksPerHour) : '--'} sub={`${perfData.totalTasks} total`} color="text-blue-400" />
+            <PerfStat icon={GitPullRequest} label="PRs/h" value={perfData.prsPerHour !== null ? String(perfData.prsPerHour) : '--'} sub={`${perfData.prsOpened} total`} color="text-cyan-400" rates={[{ label: '/day', value: perfData.prsPerDay !== null ? String(perfData.prsPerDay) : '--' }, { label: '/week', value: perfData.prsPerWeek !== null ? String(perfData.prsPerWeek) : '--' }]} />
+            <PerfStat icon={Zap} label="Tasks/h" value={perfData.tasksPerHour !== null ? String(perfData.tasksPerHour) : '--'} sub={`${perfData.totalTasks} total`} color="text-blue-400" rates={[{ label: '/day', value: perfData.tasksPerDay !== null ? String(perfData.tasksPerDay) : '--' }, { label: '/week', value: perfData.tasksPerWeek !== null ? String(perfData.tasksPerWeek) : '--' }]} />
             <PerfStat icon={Target} label="Success" value={`${perfData.successRate}%`} sub={`${perfData.successCount} ok / ${perfData.failedCount} fail`} color="text-green-400" />
             <PerfStat icon={Timer} label="Avg Duration" value={formatDuration(perfData.avgDurationMs)} sub={`${perfData.avgAttemptsPerTask} avg attempts`} color="text-yellow-400" />
             <PerfStat icon={DollarSign} label="Cost" value={`$${perfData.totalCostUsd.toFixed(2)}`} sub={perfData.avgCostUsd !== null ? `$${perfData.avgCostUsd.toFixed(2)}/task` : '--'} color="text-emerald-400" />
             <PerfStat icon={Hash} label="Tokens" value={formatCompact(perfData.totalTokens)} sub={`${formatCompact(perfData.avgTokensPerTask)}/task`} color="text-purple-400" />
             <PerfStat icon={Hammer} label="Tool Calls" value={formatCompact(perfData.totalToolCalls)} sub={`${perfData.avgToolCallsPerTask}/task`} color="text-orange-400" />
-            <PerfStat icon={TrendingUp} label="Tasks/Day" value={perfData.tasksPerDay !== null ? String(perfData.tasksPerDay) : '--'} color="text-blue-400" />
             {/* Daily sparkline */}
             <Card className="p-3 col-span-2 flex flex-col justify-between">
               <span className="text-xs text-zinc-500 font-medium mb-1">Last 14 Days</span>
