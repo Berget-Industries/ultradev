@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { Plus, Clock, Pencil } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -8,6 +8,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { Input } from '@/components/ui/input'
 import { CronjobForm, type Cronjob } from '@/components/cronjobs/CronjobForm'
 import { api } from '@/lib/api'
+import { useStore } from '@/lib/store'
 
 interface Job {
   name: string
@@ -56,28 +57,20 @@ function slugify(name: string): string {
 }
 
 export default function CronjobsPage() {
-  const [cronjobs, setCronjobs] = useState<Cronjob[]>([])
-  const [systemJobs, setSystemJobs] = useState<Job[]>([])
+  const { data: cronjobs, refresh: refreshCronjobs } = useStore<Cronjob[]>('/cronjobs', () => api.get('/cronjobs'), { pollInterval: 10_000 })
+  const { data: orchState, refresh: refreshOrch } = useStore<OrchestratorState>('/orchestrator', () => api.get('/orchestrator'), { pollInterval: 10_000 })
+  const systemJobs = orchState?.jobs ?? []
+  const pollIntervalMs = orchState?.config?.pollIntervalMs ?? 120000
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editing, setEditing] = useState<Cronjob | null>(null)
   const [pollerDialogOpen, setPollerDialogOpen] = useState(false)
   const [editingPoller, setEditingPoller] = useState<string | null>(null)
   const [pollerIntervalSec, setPollerIntervalSec] = useState('')
-  const [pollIntervalMs, setPollIntervalMs] = useState<number>(120000)
 
   const load = () => {
-    api.get<Cronjob[]>('/cronjobs').then(setCronjobs).catch(() => {})
-    api.get<OrchestratorState>('/orchestrator').then(s => {
-      setSystemJobs(s.jobs)
-      if (s.config?.pollIntervalMs) setPollIntervalMs(s.config.pollIntervalMs)
-    }).catch(() => {})
+    refreshCronjobs()
+    refreshOrch()
   }
-
-  useEffect(() => {
-    load()
-    const id = setInterval(load, 10_000)
-    return () => clearInterval(id)
-  }, [])
 
   // Merge into one list: system pollers first, then custom cronjobs
   const rows: CronRow[] = [
@@ -90,7 +83,7 @@ export default function CronjobsPage() {
       system: true,
       enabled: j.enabled ?? true,
     })),
-    ...cronjobs.map((c): CronRow => ({
+    ...(cronjobs ?? []).map((c): CronRow => ({
       id: `cron-${c.id}`,
       name: c.name,
       schedule: c.schedule,

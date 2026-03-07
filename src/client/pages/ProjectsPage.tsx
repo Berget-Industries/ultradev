@@ -1,22 +1,16 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { Plus } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ProjectList } from '@/components/projects/ProjectList'
 import { ProjectForm, type Project, type CronjobOption } from '@/components/projects/ProjectForm'
 import { api } from '@/lib/api'
+import { useStore } from '@/lib/store'
 
 export default function ProjectsPage() {
-  const [projects, setProjects] = useState<Project[]>([])
-  const [cronjobs, setCronjobs] = useState<CronjobOption[]>([])
+  const { data: projects, refresh: refreshProjects } = useStore<Project[]>('/projects', () => api.get('/projects'))
+  const { data: cronjobs } = useStore<CronjobOption[]>('/cronjobs', () => api.get('/cronjobs'))
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editing, setEditing] = useState<Project | null>(null)
-
-  const load = () => {
-    api.get<Project[]>('/projects').then(setProjects)
-    api.get<CronjobOption[]>('/cronjobs').then(setCronjobs)
-  }
-
-  useEffect(() => { load() }, [])
 
   const handleSubmit = async (data: Partial<Project>) => {
     if (editing) {
@@ -25,7 +19,7 @@ export default function ProjectsPage() {
       await api.post('/projects', data)
     }
     setEditing(null)
-    load()
+    refreshProjects()
   }
 
   const handleEdit = (p: Project) => {
@@ -35,7 +29,7 @@ export default function ProjectsPage() {
 
   const handleDelete = async (id: number) => {
     await api.del(`/projects/${id}`)
-    load()
+    refreshProjects()
   }
 
   return (
@@ -46,12 +40,12 @@ export default function ProjectsPage() {
           <Plus className="h-4 w-4" /> New Repo
         </Button>
       </div>
-      <ProjectList projects={projects} onEdit={handleEdit} onDelete={handleDelete} />
+      <ProjectList projects={projects ?? []} onEdit={handleEdit} onDelete={handleDelete} />
       <ProjectForm
         open={dialogOpen}
         onOpenChange={setDialogOpen}
         project={editing}
-        cronjobs={cronjobs}
+        cronjobs={cronjobs ?? []}
         onSubmit={handleSubmit}
       />
     </div>

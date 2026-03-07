@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import {
   getOrchestratorState,
+  invalidateOrchestratorCache,
   getActivityLog,
   startPolling, stopPolling, updatePollingInterval,
   startPrPolling, stopPrPolling, updatePrPollingInterval,
@@ -28,7 +29,7 @@ router.get('/live', (req, res) => {
   // Send initial state immediately
   send()
 
-  const interval = setInterval(send, 2000)
+  const interval = setInterval(send, 10_000)
 
   req.on('close', () => {
     clearInterval(interval)
@@ -103,6 +104,7 @@ router.post('/requeue/:key', (req, res) => {
   }
 
   setIssueState(key, { status: 'failed', attempts: 0, error: 'Requeued manually', notifiedMaxRetries: false })
+  invalidateOrchestratorCache()
   console.log(`[api] Requeued: ${key}`)
   res.json({ ok: true, key })
 })

@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useCallback } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import {
   Activity,
   Wrench,
@@ -46,6 +46,7 @@ import { LogViewer } from '@/components/LogViewer'
 import { toolIcon } from '@/components/LogContent'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { api } from '@/lib/api'
+import { useStore } from '@/lib/store'
 
 // --- Types ---
 
@@ -360,11 +361,14 @@ function LiveDuration({ updatedAt, durationMs }: { updatedAt: number | null; dur
 
 export default function DashboardPage() {
   const [orchestrator, setOrchestrator] = useState<OrchestratorState | null>(null)
-  const [stats, setStats] = useState<StatsData | null>(null)
   const [viewingLog, setViewingLog] = useState<WorkItem | null>(null)
-  const [openIssues, setOpenIssues] = useState<OpenIssue[]>([])
-  const [activityLog, setActivityLog] = useState<{ ts: number; source: string; message: string }[]>([])
   const sseRef = useRef<EventSource | null>(null)
+
+  const { data: stats } = useStore<StatsData>('/stats', () => api.get('/stats'), { pollInterval: 5_000 })
+  const { data: openIssuesData } = useStore<OpenIssue[]>('/issues', () => api.get('/issues'), { pollInterval: 60_000 })
+  const { data: activityLogData } = useStore<{ ts: number; source: string; message: string }[]>('/orchestrator/activity', () => api.get('/orchestrator/activity?limit=50'), { pollInterval: 10_000 })
+  const openIssues = openIssuesData ?? []
+  const activityLog = activityLogData ?? []
 
   // SSE connection for real-time orchestrator state
   useEffect(() => {
@@ -386,30 +390,6 @@ export default function DashboardPage() {
       es.close()
       sseRef.current = null
     }
-  }, [])
-
-  // Poll system stats every 5s
-  useEffect(() => {
-    const poll = () => api.get<StatsData>('/stats').then(setStats).catch(() => {})
-    poll()
-    const id = setInterval(poll, 5_000)
-    return () => clearInterval(id)
-  }, [])
-
-  // Poll open issues every 60s
-  useEffect(() => {
-    const poll = () => api.get<OpenIssue[]>('/issues').then(setOpenIssues).catch(() => {})
-    poll()
-    const id = setInterval(poll, 60_000)
-    return () => clearInterval(id)
-  }, [])
-
-  // Poll activity log every 10s
-  useEffect(() => {
-    const poll = () => api.get<{ ts: number; source: string; message: string }[]>('/orchestrator/activity?limit=50').then(setActivityLog).catch(() => {})
-    poll()
-    const id = setInterval(poll, 10_000)
-    return () => clearInterval(id)
   }, [])
 
   if (!orchestrator) {
