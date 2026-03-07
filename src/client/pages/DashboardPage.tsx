@@ -30,6 +30,8 @@ import {
   Check,
   X,
   Minus,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react'
 import { Card } from '@/components/ui/card'
 import { Switch } from '@/components/ui/switch'
@@ -362,6 +364,8 @@ function LiveDuration({ updatedAt, durationMs }: { updatedAt: number | null; dur
 export default function DashboardPage() {
   const [orchestrator, setOrchestrator] = useState<OrchestratorState | null>(null)
   const [viewingLog, setViewingLog] = useState<WorkItem | null>(null)
+  const [historyPage, setHistoryPage] = useState(0)
+  const HISTORY_PAGE_SIZE = 10
   const sseRef = useRef<EventSource | null>(null)
 
   const { data: stats } = useStore<StatsData>('/stats', () => api.get('/stats'), { pollInterval: 5_000 })
@@ -408,6 +412,9 @@ export default function DashboardPage() {
   const queuedItems = orchestrator.workQueue.filter(w => w.status === 'failed' && w.attempts < 3).sort(byLatest)
   const staleItems = orchestrator.workQueue.filter(w => w.status === 'failed' && w.attempts >= 3).sort(byLatest)
   const doneItems = orchestrator.workQueue.filter(w => w.status !== 'in_progress' && w.status !== 'failed').sort(byLatest)
+  const historyTotalPages = Math.max(1, Math.ceil(doneItems.length / HISTORY_PAGE_SIZE))
+  const clampedPage = Math.min(historyPage, historyTotalPages - 1)
+  const paginatedDoneItems = doneItems.slice(clampedPage * HISTORY_PAGE_SIZE, (clampedPage + 1) * HISTORY_PAGE_SIZE)
   const pollers = orchestrator.jobs
 
   return (
@@ -774,7 +781,7 @@ export default function DashboardPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {doneItems.map((item) => (
+                {paginatedDoneItems.map((item) => (
                   <TableRow
                     key={item.key}
                     className={item.logFile ? 'cursor-pointer hover:bg-zinc-800/50' : ''}
@@ -828,6 +835,32 @@ export default function DashboardPage() {
                 ))}
               </TableBody>
             </Table>
+            {historyTotalPages > 1 && (
+              <div className="flex items-center justify-between border-t border-zinc-800 px-3 py-2">
+                <span className="text-xs text-zinc-500">
+                  {clampedPage * HISTORY_PAGE_SIZE + 1}&ndash;{Math.min((clampedPage + 1) * HISTORY_PAGE_SIZE, doneItems.length)} of {doneItems.length}
+                </span>
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => setHistoryPage(p => Math.max(0, p - 1))}
+                    disabled={clampedPage === 0}
+                    className="p-1 rounded hover:bg-zinc-800 disabled:opacity-30 disabled:cursor-not-allowed text-zinc-400"
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                  </button>
+                  <span className="text-xs text-zinc-500 tabular-nums px-1">
+                    {clampedPage + 1} / {historyTotalPages}
+                  </span>
+                  <button
+                    onClick={() => setHistoryPage(p => Math.min(historyTotalPages - 1, p + 1))}
+                    disabled={clampedPage >= historyTotalPages - 1}
+                    className="p-1 rounded hover:bg-zinc-800 disabled:opacity-30 disabled:cursor-not-allowed text-zinc-400"
+                  >
+                    <ChevronRight className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+            )}
           </Card>
         )}
       </div>
