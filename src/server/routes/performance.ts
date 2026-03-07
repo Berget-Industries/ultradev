@@ -79,6 +79,8 @@ interface PerformanceStats {
   tasksPerHour: number | null
   tasksPerDay: number | null
   tasksPerWeek: number | null
+  costPerDay: number | null
+  costPerWeek: number | null
   repos: { name: string; tasks: number; prs: number; successRate: number }[]
   daily: {
     date: string
@@ -175,6 +177,8 @@ function computePerformance(): PerformanceStats {
   let tasksPerHour: number | null = null
   let tasksPerDay: number | null = null
   let tasksPerWeek: number | null = null
+  let costPerDay: number | null = null
+  let costPerWeek: number | null = null
   if (earliestTs && latestTs && latestTs > earliestTs) {
     const spanHours = (latestTs - earliestTs) / 3_600_000
     const spanDays = spanHours / 24
@@ -186,10 +190,12 @@ function computePerformance(): PerformanceStats {
     if (spanDays > 0) {
       prsPerDay = Math.round((prsOpened / spanDays) * 100) / 100
       tasksPerDay = Math.round((totalTasks / spanDays) * 100) / 100
+      costPerDay = Math.round((totalCost / spanDays) * 100) / 100
     }
     if (spanWeeks > 0) {
       prsPerWeek = Math.round((prsOpened / spanWeeks) * 100) / 100
       tasksPerWeek = Math.round((totalTasks / spanWeeks) * 100) / 100
+      costPerWeek = Math.round((totalCost / spanWeeks) * 100) / 100
     }
   }
 
@@ -231,6 +237,8 @@ function computePerformance(): PerformanceStats {
     tasksPerHour,
     tasksPerDay,
     tasksPerWeek,
+    costPerDay,
+    costPerWeek,
     repos,
     daily: dailyArr,
   }

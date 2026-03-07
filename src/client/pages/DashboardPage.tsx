@@ -171,6 +171,8 @@ interface PerformanceData {
   tasksPerHour: number | null
   tasksPerDay: number | null
   tasksPerWeek: number | null
+  costPerDay: number | null
+  costPerWeek: number | null
   repos: { name: string; tasks: number; prs: number; successRate: number }[]
   daily: {
     date: string
@@ -594,12 +596,12 @@ export default function DashboardPage() {
             <BarChart3 className="h-4 w-4 text-zinc-400" />
             <span className="text-sm font-medium text-zinc-300">Performance</span>
           </div>
-          <div className="grid grid-cols-3 lg:grid-cols-5 gap-2">
+          <div className="grid grid-cols-5 lg:grid-cols-9 gap-2">
             <PerfStat icon={GitPullRequest} label="PRs/h" value={perfData.prsPerHour !== null ? String(perfData.prsPerHour) : '--'} sub={`${perfData.prsOpened} total`} color="text-cyan-400" rates={[{ label: '/day', value: perfData.prsPerDay !== null ? String(perfData.prsPerDay) : '--' }, { label: '/week', value: perfData.prsPerWeek !== null ? String(perfData.prsPerWeek) : '--' }]} />
             <PerfStat icon={Zap} label="Tasks/h" value={perfData.tasksPerHour !== null ? String(perfData.tasksPerHour) : '--'} sub={`${perfData.totalTasks} total`} color="text-blue-400" rates={[{ label: '/day', value: perfData.tasksPerDay !== null ? String(perfData.tasksPerDay) : '--' }, { label: '/week', value: perfData.tasksPerWeek !== null ? String(perfData.tasksPerWeek) : '--' }]} />
             <PerfStat icon={Target} label="Success" value={`${perfData.successRate}%`} sub={`${perfData.successCount} ok / ${perfData.failedCount} fail`} color="text-green-400" />
             <PerfStat icon={Timer} label="Avg Duration" value={formatDuration(perfData.avgDurationMs)} sub={`${perfData.avgAttemptsPerTask} avg attempts`} color="text-yellow-400" />
-            <PerfStat icon={DollarSign} label="Cost" value={`$${perfData.totalCostUsd.toFixed(2)}`} sub={perfData.avgCostUsd !== null ? `$${perfData.avgCostUsd.toFixed(2)}/task` : '--'} color="text-emerald-400" />
+            <PerfStat icon={DollarSign} label="Cost" value={`$${perfData.totalCostUsd.toFixed(2)}`} sub={perfData.avgCostUsd !== null ? `$${perfData.avgCostUsd.toFixed(2)}/task` : '--'} color="text-emerald-400" rates={[{ label: '/day', value: perfData.costPerDay !== null ? `$${perfData.costPerDay}` : '--' }, { label: '/week', value: perfData.costPerWeek !== null ? `$${perfData.costPerWeek}` : '--' }]} />
             <PerfStat icon={Hash} label="Tokens" value={formatCompact(perfData.totalTokens)} sub={`${formatCompact(perfData.avgTokensPerTask)}/task`} color="text-purple-400" />
             <PerfStat icon={Hammer} label="Tool Calls" value={formatCompact(perfData.totalToolCalls)} sub={`${perfData.avgToolCallsPerTask}/task`} color="text-orange-400" />
             {/* Daily sparkline */}
