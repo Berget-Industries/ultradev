@@ -361,11 +361,12 @@ function LiveDuration({ updatedAt, durationMs }: { updatedAt: number | null; dur
 
 // --- Main Component ---
 
+const HISTORY_PAGE_SIZE = 10
+
 export default function DashboardPage() {
   const [orchestrator, setOrchestrator] = useState<OrchestratorState | null>(null)
   const [viewingLog, setViewingLog] = useState<WorkItem | null>(null)
   const [historyPage, setHistoryPage] = useState(0)
-  const HISTORY_PAGE_SIZE = 10
   const sseRef = useRef<EventSource | null>(null)
 
   const { data: stats } = useStore<StatsData>('/stats', () => api.get('/stats'), { pollInterval: 5_000 })
@@ -395,6 +396,14 @@ export default function DashboardPage() {
       sseRef.current = null
     }
   }, [])
+
+  // Sync historyPage back when clamping activates (e.g. items shrink then grow)
+  useEffect(() => {
+    if (!orchestrator) return
+    const doneCount = orchestrator.workQueue.filter(w => w.status !== 'in_progress' && w.status !== 'failed').length
+    const maxPage = Math.max(0, Math.ceil(doneCount / HISTORY_PAGE_SIZE) - 1)
+    if (historyPage > maxPage) setHistoryPage(maxPage)
+  }, [orchestrator, historyPage])
 
   if (!orchestrator) {
     return (
