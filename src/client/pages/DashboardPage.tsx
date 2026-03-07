@@ -166,6 +166,7 @@ interface PerformanceData {
   avgTokensPerTask: number
   avgToolCallsPerTask: number
   prsPerHour: number | null
+  tasksPerHour: number | null
   tasksPerDay: number | null
   repos: { name: string; tasks: number; prs: number; successRate: number }[]
   daily: {
@@ -400,16 +401,16 @@ function LiveDuration({ updatedAt, durationMs }: { updatedAt: number | null; dur
 
 // --- Perf Stat Cell ---
 
-function PerfStat({ icon: Icon, label, value, sub, color }: { icon: typeof Zap; label: string; value: string; sub: string; color: string }) {
+function PerfStat({ icon: Icon, label, value, sub, color }: { icon: typeof Zap; label: string; value: string; sub?: string; color: string }) {
   return (
-    <div className="flex flex-col gap-0.5">
-      <div className="flex items-center gap-1">
-        <Icon className={`h-3 w-3 ${color}`} />
-        <span className="text-[10px] text-zinc-500 uppercase tracking-wider">{label}</span>
+    <Card className="p-3 flex flex-col gap-1">
+      <div className="flex items-center gap-1.5">
+        <Icon className={`h-3.5 w-3.5 ${color}`} />
+        <span className="text-xs text-zinc-500 font-medium">{label}</span>
       </div>
-      <span className={`text-lg font-bold font-mono leading-none ${color}`}>{value}</span>
-      <span className="text-[10px] text-zinc-600 font-mono">{sub}</span>
-    </div>
+      <span className={`text-2xl font-bold font-mono leading-none ${color}`}>{value}</span>
+      {sub && <span className="text-xs text-zinc-500 font-mono">{sub}</span>}
+    </Card>
   )
 }
 
@@ -575,42 +576,44 @@ export default function DashboardPage() {
 
       {/* ---- Performance Stats ---- */}
       {perfData && (
-        <Card className="p-3">
-          <div className="flex items-center gap-1.5 mb-3">
+        <div>
+          <div className="flex items-center gap-1.5 mb-2">
             <BarChart3 className="h-4 w-4 text-zinc-400" />
             <span className="text-sm font-medium text-zinc-300">Performance</span>
           </div>
-          <div className="grid grid-cols-4 lg:grid-cols-8 gap-3">
-            <PerfStat icon={Target} label="Success Rate" value={`${perfData.successRate}%`} sub={`${perfData.successCount}/${perfData.totalTasks}`} color="text-green-400" />
-            <PerfStat icon={GitPullRequest} label="PRs Opened" value={String(perfData.prsOpened)} sub={perfData.prsPerHour !== null ? `${perfData.prsPerHour}/h` : '--'} color="text-cyan-400" />
-            <PerfStat icon={TrendingUp} label="Tasks/Day" value={perfData.tasksPerDay !== null ? String(perfData.tasksPerDay) : '--'} sub={`${perfData.totalTasks} total`} color="text-blue-400" />
+          <div className="grid grid-cols-3 lg:grid-cols-5 gap-2">
+            <PerfStat icon={GitPullRequest} label="PRs/h" value={perfData.prsPerHour !== null ? String(perfData.prsPerHour) : '--'} sub={`${perfData.prsOpened} total`} color="text-cyan-400" />
+            <PerfStat icon={Zap} label="Tasks/h" value={perfData.tasksPerHour !== null ? String(perfData.tasksPerHour) : '--'} sub={`${perfData.totalTasks} total`} color="text-blue-400" />
+            <PerfStat icon={Target} label="Success" value={`${perfData.successRate}%`} sub={`${perfData.successCount} ok / ${perfData.failedCount} fail`} color="text-green-400" />
             <PerfStat icon={Timer} label="Avg Duration" value={formatDuration(perfData.avgDurationMs)} sub={`${perfData.avgAttemptsPerTask} avg attempts`} color="text-yellow-400" />
-            <PerfStat icon={DollarSign} label="Total Cost" value={`$${perfData.totalCostUsd.toFixed(2)}`} sub={perfData.avgCostUsd !== null ? `$${perfData.avgCostUsd.toFixed(4)}/task` : '--'} color="text-emerald-400" />
+            <PerfStat icon={DollarSign} label="Cost" value={`$${perfData.totalCostUsd.toFixed(2)}`} sub={perfData.avgCostUsd !== null ? `$${perfData.avgCostUsd.toFixed(2)}/task` : '--'} color="text-emerald-400" />
             <PerfStat icon={Hash} label="Tokens" value={formatCompact(perfData.totalTokens)} sub={`${formatCompact(perfData.avgTokensPerTask)}/task`} color="text-purple-400" />
             <PerfStat icon={Hammer} label="Tool Calls" value={formatCompact(perfData.totalToolCalls)} sub={`${perfData.avgToolCallsPerTask}/task`} color="text-orange-400" />
-            <PerfStat icon={XCircle} label="Failed" value={String(perfData.failedCount)} sub={`${perfData.totalTasks > 0 ? 100 - perfData.successRate : 0}% fail rate`} color="text-red-400" />
+            <PerfStat icon={TrendingUp} label="Tasks/Day" value={perfData.tasksPerDay !== null ? String(perfData.tasksPerDay) : '--'} color="text-blue-400" />
+            {/* Daily sparkline */}
+            <Card className="p-3 col-span-2 flex flex-col justify-between">
+              <span className="text-xs text-zinc-500 font-medium mb-1">Last 14 Days</span>
+              <div className="flex items-end gap-[3px] h-10 flex-1">
+                {perfData.daily.map((d) => {
+                  const max = Math.max(...perfData.daily.map(x => x.tasks), 1)
+                  const h = Math.max(2, (d.tasks / max) * 40)
+                  return (
+                    <div
+                      key={d.date}
+                      className="flex-1 rounded-sm transition-all duration-300"
+                      style={{ height: `${h}px`, backgroundColor: d.failures > 0 ? '#ef444480' : d.tasks > 0 ? '#3b82f680' : '#27272a' }}
+                      title={`${d.date}: ${d.tasks} tasks, ${d.prs} PRs, $${d.costUsd.toFixed(2)}`}
+                    />
+                  )
+                })}
+              </div>
+              <div className="flex justify-between mt-1">
+                <span className="text-[10px] text-zinc-600">{perfData.daily[0]?.date.slice(5)}</span>
+                <span className="text-[10px] text-zinc-600">{perfData.daily[perfData.daily.length - 1]?.date.slice(5)}</span>
+              </div>
+            </Card>
           </div>
-          {/* Mini daily sparkline */}
-          <div className="mt-3 flex items-end gap-[3px] h-8">
-            {perfData.daily.map((d) => {
-              const max = Math.max(...perfData.daily.map(x => x.tasks), 1)
-              const h = Math.max(2, (d.tasks / max) * 32)
-              return (
-                <div
-                  key={d.date}
-                  className="flex-1 rounded-sm transition-all duration-300"
-                  style={{ height: `${h}px`, backgroundColor: d.failures > 0 ? '#ef444480' : d.tasks > 0 ? '#3b82f680' : '#27272a' }}
-                  title={`${d.date}: ${d.tasks} tasks, ${d.prs} PRs, $${d.costUsd.toFixed(2)}`}
-                />
-              )
-            })}
-          </div>
-          <div className="flex justify-between mt-1">
-            <span className="text-[10px] text-zinc-600">{perfData.daily[0]?.date.slice(5)}</span>
-            <span className="text-[10px] text-zinc-600">Last 14 days</span>
-            <span className="text-[10px] text-zinc-600">{perfData.daily[perfData.daily.length - 1]?.date.slice(5)}</span>
-          </div>
-        </Card>
+        </div>
       )}
 
       {/* ---- Open Issues + Activity Log (2-col) ---- */}

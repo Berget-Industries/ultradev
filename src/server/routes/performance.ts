@@ -1,14 +1,63 @@
 import { Router } from 'express'
-import { readFileSync, readdirSync, statSync } from 'fs'
+import { readFileSync, statSync } from 'fs'
 import { join } from 'path'
 import { DATA_DIR } from '../paths.js'
-import { loadConfig } from '../orchestrator/config.js'
 import { cached } from '../cache.js'
 
 const router = Router()
 
-const LOGS_DIR = loadConfig().paths.logs
 const STATE_FILE = join(DATA_DIR, 'state.json')
+
+// Module-level mtime cache: only re-parse a log file if it changed
+interface LogParsed { tokens: number; cost: number | null; duration: number | null; toolCalls: number }
+const logParseCache = new Map<string, { mtimeMs: number; result: LogParsed }>()
+
+function parseLogMetrics(fullPath: string): LogParsed | null {
+  try {
+    const fstat = statSync(fullPath)
+    const entry = logParseCache.get(fullPath)
+    if (entry && entry.mtimeMs === fstat.mtimeMs) return entry.result
+
+    const content = readFileSync(fullPath, 'utf-8')
+    const lines = content.trim().split('\n')
+    let totalTokens = 0
+    let costUsd: number | null = null
+    let durationMs: number | null = null
+    let toolCalls = 0
+
+    for (const line of lines) {
+      try {
+        const event = JSON.parse(line)
+        if (event.type === 'assistant' && event.message?.usage) {
+          const u = event.message.usage
+          totalTokens += (u.input_tokens || 0) + (u.output_tokens || 0) +
+            (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0)
+        }
+        if (event.type === 'assistant' && event.message?.content) {
+          for (const block of event.message.content) {
+            if (block.type === 'tool_use') toolCalls++
+          }
+        }
+        if (event.type === 'result' && event.subtype !== 'tool_result') {
+          costUsd = event.total_cost_usd ?? event.cost_usd ?? costUsd
+          durationMs = event.duration_ms ?? durationMs
+        }
+      } catch { /* skip bad lines */ }
+    }
+
+    if (durationMs === null) {
+      const created = fstat.birthtimeMs || fstat.ctimeMs
+      const modified = fstat.mtimeMs
+      if (modified > created) durationMs = Math.round(modified - created)
+    }
+
+    const result: LogParsed = { tokens: totalTokens, cost: costUsd, duration: durationMs, toolCalls }
+    logParseCache.set(fullPath, { mtimeMs: fstat.mtimeMs, result })
+    return result
+  } catch {
+    return null
+  }
+}
 
 interface PerformanceStats {
   totalTasks: number
@@ -25,6 +74,7 @@ interface PerformanceStats {
   avgTokensPerTask: number
   avgToolCallsPerTask: number
   prsPerHour: number | null
+  tasksPerHour: number | null
   tasksPerDay: number | null
   repos: { name: string; tasks: number; prs: number; successRate: number }[]
   daily: {
@@ -39,61 +89,13 @@ interface PerformanceStats {
 }
 
 function computePerformance(): PerformanceStats {
-  // Load state
+  // Load state — only source of truth for which tasks exist
   let issues: Record<string, any> = {}
   try {
     const content = readFileSync(STATE_FILE, 'utf-8')
     const state = JSON.parse(content)
     issues = state.issues || {}
   } catch { /* no state */ }
-
-  // Parse log files for token/cost data (reuse usage.ts cache approach)
-  const logCache = new Map<string, { tokens: number; cost: number | null; duration: number | null; toolCalls: number }>()
-  try {
-    const files = readdirSync(LOGS_DIR).filter(f => f.endsWith('.log') && !f.startsWith('review_') && !f.startsWith('oom-'))
-    for (const file of files) {
-      const fullPath = join(LOGS_DIR, file)
-      try {
-        const content = readFileSync(fullPath, 'utf-8')
-        const lines = content.trim().split('\n')
-        let totalTokens = 0
-        let costUsd: number | null = null
-        let durationMs: number | null = null
-        let toolCalls = 0
-
-        for (const line of lines) {
-          try {
-            const event = JSON.parse(line)
-            if (event.type === 'assistant' && event.message?.usage) {
-              const u = event.message.usage
-              totalTokens += (u.input_tokens || 0) + (u.output_tokens || 0) +
-                (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0)
-            }
-            if (event.type === 'assistant' && event.message?.content) {
-              for (const block of event.message.content) {
-                if (block.type === 'tool_use') toolCalls++
-              }
-            }
-            if (event.type === 'result' && event.subtype !== 'tool_result') {
-              costUsd = event.total_cost_usd ?? event.cost_usd ?? costUsd
-              durationMs = event.duration_ms ?? durationMs
-            }
-          } catch { /* skip bad lines */ }
-        }
-
-        if (durationMs === null) {
-          try {
-            const fstat = statSync(fullPath)
-            const created = fstat.birthtimeMs || fstat.ctimeMs
-            const modified = fstat.mtimeMs
-            if (modified > created) durationMs = Math.round(modified - created)
-          } catch { /* ok */ }
-        }
-
-        logCache.set(fullPath, { tokens: totalTokens, cost: costUsd, duration: durationMs, toolCalls })
-      } catch { /* skip unreadable */ }
-    }
-  } catch { /* no logs dir */ }
 
   const entries = Object.entries(issues) as [string, any][]
   const allTasks = entries.filter(([, v]) => v.status === 'done' || v.status === 'failed')
@@ -111,7 +113,6 @@ function computePerformance(): PerformanceStats {
   const repoMap = new Map<string, { tasks: number; prs: number; successes: number }>()
   const dailyMap = new Map<string, { tasks: number; prs: number; successes: number; failures: number; costUsd: number; tokens: number }>()
 
-  // Track earliest and latest timestamps for rate calculations
   let earliestTs: number | null = null
   let latestTs: number | null = null
 
@@ -125,8 +126,8 @@ function computePerformance(): PerformanceStats {
     if (hasPr) prsOpened++
     totalAttempts += val.attempts || 1
 
-    // Log-derived metrics
-    const logData = val.logFile ? logCache.get(val.logFile) : null
+    // Only parse log files referenced by state (not all 340+ files)
+    const logData = val.logFile ? parseLogMetrics(val.logFile) : null
     if (logData) {
       totalTokens += logData.tokens
       totalToolCalls += logData.toolCalls
@@ -137,14 +138,12 @@ function computePerformance(): PerformanceStats {
       }
     }
 
-    // Timestamp tracking
     const ts = val.updatedAt || null
     if (ts) {
       if (!earliestTs || ts < earliestTs) earliestTs = ts
       if (!latestTs || ts > latestTs) latestTs = ts
     }
 
-    // Per-repo
     const repo = val.repo || 'unknown'
     const r = repoMap.get(repo) || { tasks: 0, prs: 0, successes: 0 }
     r.tasks++
@@ -152,7 +151,6 @@ function computePerformance(): PerformanceStats {
     if (isDone) r.successes++
     repoMap.set(repo, r)
 
-    // Per-day
     if (ts) {
       const date = new Date(ts).toISOString().slice(0, 10)
       const d = dailyMap.get(date) || { tasks: 0, prs: 0, successes: 0, failures: 0, costUsd: 0, tokens: 0 }
@@ -168,13 +166,16 @@ function computePerformance(): PerformanceStats {
 
   const totalTasks = allTasks.length
 
-  // PRs per hour (based on time span of all completed work)
   let prsPerHour: number | null = null
+  let tasksPerHour: number | null = null
   let tasksPerDay: number | null = null
   if (earliestTs && latestTs && latestTs > earliestTs) {
     const spanHours = (latestTs - earliestTs) / 3_600_000
     const spanDays = spanHours / 24
-    if (spanHours > 0) prsPerHour = Math.round((prsOpened / spanHours) * 100) / 100
+    if (spanHours > 0) {
+      prsPerHour = Math.round((prsOpened / spanHours) * 100) / 100
+      tasksPerHour = Math.round((totalTasks / spanHours) * 100) / 100
+    }
     if (spanDays > 0) tasksPerDay = Math.round((totalTasks / spanDays) * 100) / 100
   }
 
@@ -187,7 +188,6 @@ function computePerformance(): PerformanceStats {
     }))
     .sort((a, b) => b.tasks - a.tasks)
 
-  // Last 14 days for daily chart
   const dailyArr: PerformanceStats['daily'] = []
   for (let i = 13; i >= 0; i--) {
     const d = new Date()
@@ -212,6 +212,7 @@ function computePerformance(): PerformanceStats {
     avgTokensPerTask: totalTasks > 0 ? Math.round(totalTokens / totalTasks) : 0,
     avgToolCallsPerTask: totalTasks > 0 ? Math.round(totalToolCalls / totalTasks) : 0,
     prsPerHour,
+    tasksPerHour,
     tasksPerDay,
     repos,
     daily: dailyArr,
