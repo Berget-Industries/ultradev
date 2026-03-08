@@ -2,7 +2,7 @@ import { execFileSync } from 'child_process'
 import { existsSync } from 'fs'
 import { loadConfig } from './config.js'
 import { MAINTENANCE_FILE } from '../paths.js'
-import { getIssueState, setIssueState } from './state.js'
+import { getIssueState, setIssueState, getAllIssues } from './state.js'
 import { spawnPrWorker } from './pr-worker.js'
 import { makeLogPath } from './worker.js'
 import { notify } from './notifier.js'
@@ -19,6 +19,20 @@ let enabled = false
 
 export function getPrPollerState() {
   return { lastPollTime, pollStatus, enabled }
+}
+
+/**
+ * Check if there are any pending PR reviews (failed/retryable items with type 'pr').
+ * Used by the issue poller to yield priority to requested changes.
+ */
+export function hasPendingPrReviews(): boolean {
+  const issues = getAllIssues()
+  for (const [key, state] of Object.entries(issues)) {
+    if (!key.startsWith('pr:')) continue
+    if (state.status === 'failed' && (state.attempts || 0) < MAX_ATTEMPTS) return true
+    if (state.status === 'pending') return true
+  }
+  return false
 }
 
 export function stopPrPolling() {

@@ -9,6 +9,7 @@ import { isRateLimited } from './rate-limit.js'
 import { isWorkerSlotFree, claimWorkerSlot, releaseWorkerSlot } from './worker-lock.js'
 import { logActivity } from './activity-log.js'
 import { isRepoAllowed } from './allowed-repos.js'
+import { hasPendingPrReviews } from './pr-poller.js'
 
 const MAX_ATTEMPTS = 3
 let lastPollTime: number | null = null
@@ -56,6 +57,13 @@ export function pollGitHub() {
   // Single task mode: skip if ANY worker is already running (global lock)
   if (!isWorkerSlotFree()) {
     console.log('[poller] Worker active (global lock), skipping poll')
+    return
+  }
+
+  // Yield to PR reviews — requested changes take priority over new issues
+  if (hasPendingPrReviews()) {
+    console.log('[poller] Pending PR reviews exist — yielding priority to pr-poller')
+    logActivity('poller', 'Yielding to PR reviews (requested changes have priority)')
     return
   }
 
