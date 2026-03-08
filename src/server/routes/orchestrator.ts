@@ -3,8 +3,7 @@ import {
   getOrchestratorState,
   invalidateOrchestratorCache,
   getActivityLog,
-  startPolling, stopPolling, updatePollingInterval,
-  startPrPolling, stopPrPolling, updatePrPollingInterval,
+  startGitHubSync, stopGitHubSync, updateGitHubSyncInterval,
   startErrorWatcher, stopErrorWatcher, runErrorWatcher,
 } from '../orchestrator/index.js'
 import { setRuntimePollInterval } from '../orchestrator/config.js'
@@ -53,29 +52,18 @@ router.put('/jobs/:name', async (req, res) => {
   const { name } = req.params
   const { enabled, intervalMs } = req.body as { enabled?: boolean; intervalMs?: number }
 
-  if (name === 'issue-poller') {
+  if (name === 'github-sync' || name === 'work-dispatcher') {
+    // Both controlled by the unified github-sync cycle
     if (typeof enabled === 'boolean') {
       if (enabled) {
-        startPolling()
+        startGitHubSync()
       } else {
-        stopPolling()
+        stopGitHubSync()
       }
     }
     if (typeof intervalMs === 'number' && intervalMs > 0) {
       setRuntimePollInterval(intervalMs)
-      updatePollingInterval(intervalMs)
-    }
-  } else if (name === 'pr-poller') {
-    if (typeof enabled === 'boolean') {
-      if (enabled) {
-        startPrPolling()
-      } else {
-        stopPrPolling()
-      }
-    }
-    if (typeof intervalMs === 'number' && intervalMs > 0) {
-      setRuntimePollInterval(intervalMs)
-      updatePrPollingInterval(intervalMs)
+      updateGitHubSyncInterval(intervalMs)
     }
   } else if (name === 'error-watcher') {
     if (typeof enabled === 'boolean') {
@@ -128,7 +116,7 @@ router.get('/queue/:key', (req, res) => {
     key,
     repo: state.repo || key.split('#')[0],
     number: state.number,
-    type: state.type || (key.startsWith('pr:') ? 'pr' : 'issue'),
+    type: state.type || (key.startsWith('pr:') ? 'pr' : key.startsWith('conflict:') ? 'conflict' : 'issue'),
     status: state.status,
     attempts: state.attempts || 0,
     prUrl: state.prUrl || null,

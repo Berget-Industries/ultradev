@@ -46,6 +46,50 @@ export async function initDb() {
       cronjob_id INTEGER NOT NULL REFERENCES cronjobs(id) ON DELETE CASCADE,
       PRIMARY KEY (project_id, cronjob_id)
     );
+
+    -- GitHub data cache (populated by github-sync, read by pollers + dashboard)
+    CREATE TABLE IF NOT EXISTS github_issues (
+      id SERIAL PRIMARY KEY,
+      repo TEXT NOT NULL,
+      number INTEGER NOT NULL,
+      title TEXT NOT NULL DEFAULT '',
+      body TEXT DEFAULT '',
+      state TEXT NOT NULL DEFAULT 'open',
+      labels JSONB NOT NULL DEFAULT '[]',
+      assignee TEXT DEFAULT '',
+      created_at TIMESTAMPTZ,
+      updated_at TIMESTAMPTZ,
+      synced_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(repo, number)
+    );
+
+    CREATE TABLE IF NOT EXISTS github_prs (
+      id SERIAL PRIMARY KEY,
+      repo TEXT NOT NULL,
+      number INTEGER NOT NULL,
+      title TEXT NOT NULL DEFAULT '',
+      body TEXT DEFAULT '',
+      state TEXT NOT NULL DEFAULT 'OPEN',
+      head_ref TEXT DEFAULT '',
+      base_ref TEXT DEFAULT '',
+      author TEXT DEFAULT '',
+      mergeable TEXT DEFAULT 'UNKNOWN',
+      review_decision TEXT DEFAULT '',
+      ci_status TEXT DEFAULT 'none',
+      status_check_rollup JSONB DEFAULT '[]',
+      linked_issue_numbers INTEGER[] DEFAULT '{}',
+      created_at TIMESTAMPTZ,
+      updated_at TIMESTAMPTZ,
+      synced_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(repo, number)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_github_issues_repo ON github_issues(repo);
+    CREATE INDEX IF NOT EXISTS idx_github_issues_assignee ON github_issues(assignee);
+    CREATE INDEX IF NOT EXISTS idx_github_prs_repo ON github_prs(repo);
+    CREATE INDEX IF NOT EXISTS idx_github_prs_author ON github_prs(author);
+    CREATE INDEX IF NOT EXISTS idx_github_prs_state ON github_prs(state);
+    CREATE INDEX IF NOT EXISTS idx_github_prs_mergeable ON github_prs(mergeable);
   `)
 }
 

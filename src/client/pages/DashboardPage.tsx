@@ -193,6 +193,7 @@ interface OpenIssueLinkedPr {
   state: string
   ciStatus: 'passing' | 'failing' | 'pending' | 'none'
   mergeable: boolean
+  mergeableState: string | null
   reviewDecision: string | null
 }
 
@@ -201,8 +202,9 @@ interface OpenIssue {
   number: number
   title: string
   labels: string[]
-  linkedPr: OpenIssueLinkedPr | null
-  status: 'no_pr' | 'ci_pending' | 'ci_failing' | 'changes_requested' | 'ready_to_merge' | 'merged'
+  linkedPrs: OpenIssueLinkedPr[]
+  status: 'no_pr' | 'ci_pending' | 'ci_failing' | 'changes_requested' | 'has_conflicts' | 'ready_to_merge' | 'merged'
+  priority: number
 }
 
 // --- Formatters ---
@@ -679,6 +681,7 @@ export default function DashboardPage() {
                 <TableHeader className="sticky top-0 z-10 bg-zinc-950">
                   <TableRow>
                     <TableHead className="text-xs">Issue</TableHead>
+                    <TableHead className="text-xs">Priority</TableHead>
                     <TableHead className="text-xs">Labels</TableHead>
                     <TableHead className="text-xs">PR</TableHead>
                     <TableHead className="text-xs">CI</TableHead>
@@ -687,21 +690,33 @@ export default function DashboardPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {openIssues.map((issue) => (
-                    <TableRow key={`${issue.repo}#${issue.number}`}>
+                  {openIssues.map((issue) => {
+                    const issueKey = `${issue.repo}#${issue.number}`
+                    const isActive = orchestrator?.workQueue?.some(
+                      w => w.status === 'in_progress' && (w.key === issueKey || w.key === `pr:${issueKey}` || w.key === `conflict:${issueKey}`)
+                    )
+                    const latestOpenPr = [...(issue.linkedPrs || [])].reverse().find(p => p.state === 'OPEN' || p.state === 'open')
+                    return (
+                    <TableRow key={issueKey} className={isActive ? 'animate-pulse bg-blue-500/5' : ''}>
                       <TableCell className="max-w-[300px]">
-                        <a
-                          href={`https://github.com/${issue.repo}/issues/${issue.number}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="flex items-center gap-1.5 text-xs hover:underline group"
-                        >
-                          <span className="font-mono text-zinc-500 shrink-0">
-                            {issue.repo.split('/')[1]}#{issue.number}
-                          </span>
-                          <span className="text-zinc-300 truncate group-hover:text-blue-400">{issue.title}</span>
-                          <ExternalLink className="h-3 w-3 text-zinc-600 shrink-0 opacity-0 group-hover:opacity-100" />
-                        </a>
+                        <div className="flex items-center gap-1.5">
+                          {isActive && <span className="h-2 w-2 rounded-full bg-blue-400 animate-pulse shrink-0" />}
+                          <a
+                            href={`https://github.com/${issue.repo}/issues/${issue.number}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex items-center gap-1.5 text-xs hover:underline group min-w-0"
+                          >
+                            <span className="font-mono text-zinc-500 shrink-0">
+                              {issue.repo.split('/')[1]}#{issue.number}
+                            </span>
+                            <span className="text-zinc-300 truncate group-hover:text-blue-400">{issue.title}</span>
+                            <ExternalLink className="h-3 w-3 text-zinc-600 shrink-0 opacity-0 group-hover:opacity-100" />
+                          </a>
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <PriorityBadge score={issue.priority} />
                       </TableCell>
                       <TableCell>
                         <div className="flex gap-1 flex-wrap">
@@ -717,31 +732,61 @@ export default function DashboardPage() {
                         </div>
                       </TableCell>
                       <TableCell>
-                        {issue.linkedPr ? (
-                          <a
-                            href={issue.linkedPr.url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1 text-xs text-blue-400 hover:underline"
-                          >
-                            #{issue.linkedPr.number}
-                            <ExternalLink className="h-3 w-3" />
-                          </a>
+                        {issue.linkedPrs && issue.linkedPrs.length > 0 ? (
+                          <div className="flex gap-1 flex-wrap">
+                            {issue.linkedPrs.map((pr) => {
+                              const isClosed = pr.state === 'CLOSED' || pr.state === 'closed'
+                              const isMerged = pr.state === 'MERGED' || pr.state === 'merged'
+                              return (
+                                <a
+                                  key={pr.number}
+                                  href={pr.url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className={`inline-flex items-center gap-0.5 text-xs hover:underline ${
+                                    isMerged ? 'text-purple-400' :
+                                    isClosed ? 'text-zinc-600 line-through' :
+                                    'text-blue-400'
+                                  }`}
+                                >
+                                  #{pr.number}
+                                  {pr.mergeableState === 'CONFLICTING' && (
+                                    <AlertTriangle className="h-3 w-3 text-orange-400" />
+                                  )}
+                                </a>
+                              )
+                            })}
+                          </div>
                         ) : (
                           <span className="text-zinc-700">&mdash;</span>
                         )}
                       </TableCell>
                       <TableCell>
-                        <OpenIssueCiCell ci={issue.linkedPr?.ciStatus ?? null} />
+                        <OpenIssueCiCell ci={latestOpenPr?.ciStatus ?? null} />
                       </TableCell>
                       <TableCell>
-                        <OpenIssueReviewCell review={issue.linkedPr?.reviewDecision ?? null} />
+                        <OpenIssueReviewCell review={latestOpenPr?.reviewDecision ?? null} />
                       </TableCell>
                       <TableCell>
-                        <OpenIssueStatusBadge status={issue.status} />
+                        {isActive ? (
+                          <Badge className="text-[10px] px-1.5 py-0 bg-blue-500/20 text-blue-400 border-blue-500/30 gap-1">
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                            {(() => {
+                              const activeItem = orchestrator?.workQueue?.find(
+                                w => w.status === 'in_progress' && (w.key === issueKey || w.key === `pr:${issueKey}` || w.key === `conflict:${issueKey}`)
+                              )
+                              if (activeItem?.key.startsWith('pr:')) return 'Fixing PR'
+                              if (activeItem?.key.startsWith('conflict:')) return 'Resolving conflicts'
+                              return 'Working'
+                            })()}
+                          </Badge>
+                        ) : (
+                          <OpenIssueStatusBadge status={issue.status} />
+                        )}
                       </TableCell>
                     </TableRow>
-                  ))}
+                    )
+                  })}
                 </TableBody>
               </Table>
             </ScrollArea>
@@ -1421,6 +1466,21 @@ function ActiveWorkCard({ item }: { item: WorkItem }) {
 
 // --- Open Issues helper components ---
 
+function PriorityBadge({ score }: { score: number }) {
+  const className = score >= 50
+    ? 'bg-red-500/20 text-red-400 border-red-500/30'
+    : score >= 30
+    ? 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30'
+    : score >= 10
+    ? 'bg-blue-500/20 text-blue-400 border-blue-500/30'
+    : 'bg-zinc-500/20 text-zinc-400 border-zinc-500/30'
+  return (
+    <Badge variant="outline" className={`text-[10px] px-1.5 py-0 font-mono ${className}`}>
+      {score}
+    </Badge>
+  )
+}
+
 function OpenIssueCiCell({ ci }: { ci: 'passing' | 'failing' | 'pending' | 'none' | null }) {
   if (!ci || ci === 'none') return <span className="text-zinc-700">&mdash;</span>
   switch (ci) {
@@ -1453,6 +1513,7 @@ function OpenIssueStatusBadge({ status }: { status: OpenIssue['status'] }) {
     ci_pending: { label: 'CI Pending', className: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30' },
     ci_failing: { label: 'CI Failing', className: 'bg-red-500/20 text-red-400 border-red-500/30' },
     changes_requested: { label: 'Changes Requested', className: 'bg-orange-500/20 text-orange-400 border-orange-500/30' },
+    has_conflicts: { label: 'Conflicts', className: 'bg-orange-500/20 text-orange-400 border-orange-500/30' },
     ready_to_merge: { label: 'Ready to Merge', className: 'bg-green-500/20 text-green-400 border-green-500/30' },
     merged: { label: 'Merged', className: 'bg-purple-500/20 text-purple-400 border-purple-500/30' },
   }

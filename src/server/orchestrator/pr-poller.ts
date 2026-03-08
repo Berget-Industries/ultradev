@@ -10,6 +10,7 @@ import { isRateLimited } from './rate-limit.js'
 import { isWorkerSlotFree, claimWorkerSlot, releaseWorkerSlot } from './worker-lock.js'
 import { logActivity } from './activity-log.js'
 import { isRepoAllowed } from './allowed-repos.js'
+import { getPrsWithChangesRequested } from './github-sync.js'
 
 const MAX_ATTEMPTS = 3
 let lastPollTime: number | null = null
@@ -22,17 +23,59 @@ export function getPrPollerState() {
 }
 
 /**
- * Check if there are any pending PR reviews (failed/retryable items with type 'pr').
- * Used by the issue poller to yield priority to requested changes.
+ * Check if there are any pending PR reviews that actually still need work.
+ * Cross-references state.json with the DB to avoid stale deadlocks:
+ * a pr: item in state.json only counts if the DB still shows CHANGES_REQUESTED.
  */
+let _cachedPendingCheck: { result: boolean; ts: number } | null = null
+const PENDING_CHECK_TTL = 30_000
+
 export function hasPendingPrReviews(): boolean {
+  // Use cached result to avoid hitting DB on every poll cycle
+  if (_cachedPendingCheck && Date.now() - _cachedPendingCheck.ts < PENDING_CHECK_TTL) {
+    return _cachedPendingCheck.result
+  }
+
   const issues = getAllIssues()
+  let hasPending = false
   for (const [key, state] of Object.entries(issues)) {
     if (!key.startsWith('pr:')) continue
-    if (state.status === 'failed' && (state.attempts || 0) < MAX_ATTEMPTS) return true
-    if (state.status === 'pending') return true
+    if (state.status === 'in_progress') { hasPending = true; break }
+    if (state.status === 'pending') { hasPending = true; break }
   }
-  return false
+
+  _cachedPendingCheck = { result: hasPending, ts: Date.now() }
+  return hasPending
+}
+
+/** Async version that cross-checks with DB — called by pr-poller to clean stale state */
+export async function cleanStalePrStates(): Promise<void> {
+  const issues = getAllIssues()
+  let dbPrs: any[] | null = null
+
+  for (const [key, state] of Object.entries(issues)) {
+    if (!key.startsWith('pr:')) continue
+    if (state.status !== 'failed' && state.status !== 'pending') continue
+
+    // Lazy load DB PRs
+    if (dbPrs === null) {
+      try {
+        const config = loadConfig()
+        dbPrs = await getPrsWithChangesRequested(config.github.username)
+      } catch { dbPrs = [] }
+    }
+
+    // Extract repo#number from key like "pr:owner/repo#123"
+    const keyWithoutPrefix = key.slice(3) // remove "pr:"
+    const [repo, numStr] = keyWithoutPrefix.split('#')
+    const num = parseInt(numStr)
+
+    const stillNeedsWork = dbPrs.some(p => p.repo === repo && p.number === num)
+    if (!stillNeedsWork) {
+      console.log(`[pr-poller] Clearing stale state for ${key} — no longer has changes_requested in DB`)
+      setIssueState(key, { status: 'done' })
+    }
+  }
 }
 
 export function stopPrPolling() {
@@ -78,21 +121,22 @@ export async function pollPrReviews() {
   pollStatus = 'polling'
 
   try {
-    // List our open PRs
-    const raw = execFileSync('gh', [
-      'search', 'prs',
-      '--author', username,
-      '--state', 'open',
-      '--review', 'changes_requested',
-      '--json', 'repository,number,title,url',
-      '--limit', '20',
-    ], { encoding: 'utf-8', timeout: 30000 })
+    // Clean stale pr: state entries that no longer match DB
+    await cleanStalePrStates()
+
+    // Read from DB (populated by github-sync) — no GitHub API call
+    const dbPrs = await getPrsWithChangesRequested(username)
 
     lastPollTime = Date.now()
     pollStatus = 'idle'
 
-    const prs = JSON.parse(raw)
-    logActivity('pr-poller', `Polled PRs — ${prs.length} with changes requested`)
+    const prs = dbPrs.map(p => ({
+      repository: { nameWithOwner: p.repo },
+      number: p.number,
+      title: p.title,
+      url: `https://github.com/${p.repo}/pull/${p.number}`,
+    }))
+    logActivity('pr-poller', `Checked DB — ${prs.length} with changes requested`)
     if (prs.length === 0) return
 
     for (const pr of prs) {
@@ -146,7 +190,7 @@ export async function pollPrReviews() {
 }
 
 /** Get the ISO timestamp of the most recent CHANGES_REQUESTED review on a PR */
-function getLatestReviewTimestamp(repo: string, prNum: number): string | null {
+export function getLatestReviewTimestamp(repo: string, prNum: number): string | null {
   try {
     const raw = execFileSync('gh', [
       'pr', 'view', String(prNum), '--repo', repo,
@@ -160,7 +204,7 @@ function getLatestReviewTimestamp(repo: string, prNum: number): string | null {
   }
 }
 
-async function handlePrReview(repo: string, prSummary: any, config: any, state: any) {
+export async function handlePrReview(repo: string, prSummary: any, config: any, state: any) {
   const prNum = prSummary.number
   const key = `pr:${repo}#${prNum}`
   // Capture the latest review timestamp so we can record what we addressed
@@ -216,7 +260,9 @@ async function handlePrReview(repo: string, prSummary: any, config: any, state: 
     const result = await spawnPrWorker(repo, pr, reviews, reviewComments, config, logFile)
 
     if (result.success && result.prUrl) {
-      setIssueState(key, { status: 'done', prUrl: result.prUrl, logFile: result.logFile, lastReviewAt: reviewTimestamp || undefined })
+      const existingUrls = getIssueState(key)?.prUrls || []
+      const prUrls = existingUrls.includes(result.prUrl) ? existingUrls : [...existingUrls, result.prUrl]
+      setIssueState(key, { status: 'done', prUrl: result.prUrl, prUrls, logFile: result.logFile, lastReviewAt: reviewTimestamp || undefined })
       notify(`✅ **${repo}#${prNum}** — Review feedback pushed to PR: ${result.prUrl}`)
     } else if (result.success) {
       setIssueState(key, { status: 'done', logFile: result.logFile, lastReviewAt: reviewTimestamp || undefined })

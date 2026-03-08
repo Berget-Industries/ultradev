@@ -10,7 +10,8 @@ export interface IssueState {
   repo?: string
   number?: number
   type?: string
-  prUrl?: string | null
+  prUrl?: string | null       // latest PR URL (backwards compat)
+  prUrls?: string[]           // all PR URLs (history)
   error?: string
   madeProgress?: boolean
   notifiedMaxRetries?: boolean

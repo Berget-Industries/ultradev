@@ -10,6 +10,7 @@ import { isWorkerSlotFree, claimWorkerSlot, releaseWorkerSlot } from './worker-l
 import { logActivity } from './activity-log.js'
 import { isRepoAllowed } from './allowed-repos.js'
 import { hasPendingPrReviews } from './pr-poller.js'
+import { getOpenIssues } from './github-sync.js'
 
 const MAX_ATTEMPTS = 3
 let lastPollTime: number | null = null
@@ -72,18 +73,17 @@ export async function pollGitHub() {
   pollStatus = 'polling'
 
   try {
-    const raw = execFileSync('gh', [
-      'search', 'issues',
-      '--assignee', username,
-      '--state', 'open',
-      '--json', 'repository,number,title,url,labels',
-      '--limit', '20',
-    ], { encoding: 'utf-8', timeout: 30000 })
+    // Read from DB (populated by github-sync) — no GitHub API call
+    const dbIssues = await getOpenIssues(username)
+    const issues = dbIssues.map(i => ({
+      repository: { nameWithOwner: i.repo },
+      number: i.number,
+      title: i.title,
+    }))
 
-    const issues = JSON.parse(raw)
     lastPollTime = Date.now()
     pollStatus = 'idle'
-    logActivity('poller', `Polled GitHub — ${issues.length} open issue(s) found`)
+    logActivity('poller', `Checked DB — ${issues.length} open issue(s) found`)
 
     for (const issue of issues) {
       const repo = issue.repository.nameWithOwner
@@ -136,7 +136,7 @@ export async function pollGitHub() {
   }
 }
 
-async function handleIssue(issue: any, config: any, attempt: number) {
+export async function handleIssue(issue: any, config: any, attempt: number) {
   const repo = issue.repository.nameWithOwner
   const num = issue.number
   const key = `${repo}#${num}`
@@ -160,7 +160,9 @@ async function handleIssue(issue: any, config: any, attempt: number) {
     const result = await spawnWorker(repo, prompt, config, key, logFile)
 
     if (result.success && result.prUrl) {
-      setIssueState(key, { status: 'done', prUrl: result.prUrl, logFile: result.logFile })
+      const existingUrls = getIssueState(key)?.prUrls || []
+      const prUrls = existingUrls.includes(result.prUrl) ? existingUrls : [...existingUrls, result.prUrl]
+      setIssueState(key, { status: 'done', prUrl: result.prUrl, prUrls, logFile: result.logFile })
       notify(`✅ **${key}** — PR created: ${result.prUrl}`)
     } else if (result.success) {
       setIssueState(key, { status: 'done', prUrl: null, logFile: result.logFile })
