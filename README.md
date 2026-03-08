@@ -5,10 +5,26 @@ Autonomous AI developer. Polls GitHub for assigned issues, spawns Claude Code to
 ## Quick Start
 
 ```bash
-git clone https://github.com/Berget-Industries/ultradev.git && cd ultradev && pnpm install && claude -p "Run /preflight and help me fix any issues"
+# Clone and check out the latest release
+git clone https://github.com/Berget-Industries/ultradev.git && cd ultradev
+git checkout $(git describe --tags --abbrev=0 $(git rev-list --tags --max-count=1))
+pnpm install
+claude -p "Run /preflight and help me fix any issues"
 ```
 
 Claude will walk you through `.env` setup on first run. Or copy `.env.example` to `.env` and fill it in manually.
+
+## Updating
+
+```bash
+pnpm update
+```
+
+This fetches the latest release tag and installs dependencies. If you're running via systemd, restart after updating:
+
+```bash
+systemctl --user restart ultradev-dashboard.service
+```
 
 ## What it does
 

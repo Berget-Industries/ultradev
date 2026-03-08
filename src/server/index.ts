@@ -11,6 +11,7 @@ import maintenanceRouter from './routes/maintenance.js'
 import usageRouter from './routes/usage.js'
 import issuesRouter from './routes/issues.js'
 import performanceRouter from './routes/performance.js'
+import versionRouter from './routes/version.js'
 import { startOrchestrator } from './orchestrator/index.js'
 import { getRedis, isRedisConnected } from './cache.js'
 import { initDb } from './db.js'
@@ -37,6 +38,7 @@ app.use('/api/maintenance', maintenanceRouter)
 app.use('/api/usage', usageRouter)
 app.use('/api/issues', issuesRouter)
 app.use('/api/performance', performanceRouter)
+app.use('/api/version', versionRouter)
 
 async function start() {
   // Initialize database tables
