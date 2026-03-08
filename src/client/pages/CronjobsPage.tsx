@@ -7,6 +7,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { CronjobForm, type Cronjob } from '@/components/cronjobs/CronjobForm'
+import { CronjobsSkeleton } from '@/components/skeletons/CronjobsSkeleton'
 import { api } from '@/lib/api'
 import { useStore } from '@/lib/store'
 
@@ -72,6 +73,8 @@ export default function CronjobsPage() {
     refreshOrch()
   }
 
+  const initialLoading = cronjobs === null && orchState === null
+
   // Merge into one list: system pollers first, then custom cronjobs
   const rows: CronRow[] = [
     ...systemJobs.map((j): CronRow => ({
@@ -131,6 +134,8 @@ export default function CronjobsPage() {
     setEditingPoller(null)
     load()
   }
+
+  if (initialLoading) return <CronjobsSkeleton />
 
   return (
     <div className="space-y-6">

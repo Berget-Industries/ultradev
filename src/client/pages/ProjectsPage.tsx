@@ -3,6 +3,7 @@ import { Plus } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ProjectList } from '@/components/projects/ProjectList'
 import { ProjectForm, type Project, type CronjobOption } from '@/components/projects/ProjectForm'
+import { ProjectsSkeleton } from '@/components/skeletons/ProjectsSkeleton'
 import { api } from '@/lib/api'
 import { useStore } from '@/lib/store'
 
@@ -31,6 +32,8 @@ export default function ProjectsPage() {
     await api.del(`/projects/${id}`)
     refreshProjects()
   }
+
+  if (projects === null) return <ProjectsSkeleton />
 
   return (
     <div className="space-y-4">

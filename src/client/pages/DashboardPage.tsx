@@ -52,6 +52,7 @@ import {
 import { LogViewer } from '@/components/LogViewer'
 import { toolIcon } from '@/components/LogContent'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { DashboardSkeleton } from '@/components/skeletons/DashboardSkeleton'
 import { api } from '@/lib/api'
 import { useStore } from '@/lib/store'
 
@@ -477,14 +478,7 @@ export default function DashboardPage() {
   }, [orchestrator, historyPage])
 
   if (!orchestrator) {
-    return (
-      <div className="flex items-center justify-center h-64 text-muted-foreground">
-        <div className="flex items-center gap-2">
-          <div className="h-2 w-2 rounded-full bg-blue-400 animate-pulse" />
-          Connecting...
-        </div>
-      </div>
-    )
+    return <DashboardSkeleton />
   }
 
   const byLatest = (a: WorkItem, b: WorkItem) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0)
@@ -523,7 +517,26 @@ export default function DashboardPage() {
             </div>
           </>
         ) : (
-          <span className="text-xs text-zinc-600">Loading...</span>
+          <>
+            <div className="flex items-center gap-2">
+              <div className="h-10 w-10 rounded-full bg-zinc-800 animate-pulse" />
+              <div>
+                <div className="h-2.5 w-8 bg-zinc-800 rounded animate-pulse mb-1" />
+                <div className="h-2.5 w-14 bg-zinc-800 rounded animate-pulse" />
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="h-10 w-10 rounded-full bg-zinc-800 animate-pulse" />
+              <div>
+                <div className="h-2.5 w-8 bg-zinc-800 rounded animate-pulse mb-1" />
+                <div className="h-2.5 w-14 bg-zinc-800 rounded animate-pulse" />
+              </div>
+            </div>
+            <div>
+              <div className="h-2.5 w-8 bg-zinc-800 rounded animate-pulse mb-1" />
+              <div className="h-5 w-10 bg-zinc-800 rounded animate-pulse" />
+            </div>
+          </>
         )}
 
         {/* Divider */}
@@ -590,7 +603,34 @@ export default function DashboardPage() {
       )}
 
       {/* ---- Performance Stats ---- */}
-      {perfData && (
+      {!perfData ? (
+        <div>
+          <div className="flex items-center gap-1.5 mb-2">
+            <BarChart3 className="h-4 w-4 text-zinc-400" />
+            <span className="text-sm font-medium text-zinc-300">Performance</span>
+          </div>
+          <div className="grid grid-cols-5 lg:grid-cols-9 gap-2">
+            {Array.from({ length: 7 }).map((_, i) => (
+              <Card key={i} className="p-3 flex flex-col gap-1">
+                <div className="flex items-center gap-1.5">
+                  <div className="h-3.5 w-3.5 rounded bg-zinc-800 animate-pulse" />
+                  <div className="h-3 w-12 bg-zinc-800 rounded animate-pulse" />
+                </div>
+                <div className="h-7 w-16 bg-zinc-800 rounded animate-pulse mt-1" />
+                <div className="h-3 w-20 bg-zinc-800 rounded animate-pulse mt-1" />
+              </Card>
+            ))}
+            <Card className="p-3 col-span-2 flex flex-col justify-between">
+              <div className="h-3 w-20 bg-zinc-800 rounded animate-pulse mb-1" />
+              <div className="flex items-end gap-[3px] h-10 flex-1">
+                {Array.from({ length: 14 }).map((_, i) => (
+                  <div key={i} className="flex-1 rounded-sm bg-zinc-800 animate-pulse" style={{ height: `${8 + Math.random() * 32}px` }} />
+                ))}
+              </div>
+            </Card>
+          </div>
+        </div>
+      ) : (
         <div>
           <div className="flex items-center gap-1.5 mb-2">
             <BarChart3 className="h-4 w-4 text-zinc-400" />
@@ -641,7 +681,36 @@ export default function DashboardPage() {
           </Badge>
         </div>
 
-        {openIssues.length === 0 ? (
+        {!openIssuesData ? (
+          <Card className="p-0 overflow-hidden">
+            <div className="h-[200px]">
+              <Table>
+                <TableHeader className="sticky top-0 z-10 bg-zinc-950">
+                  <TableRow>
+                    <TableHead className="text-xs">Issue</TableHead>
+                    <TableHead className="text-xs">Labels</TableHead>
+                    <TableHead className="text-xs">PR</TableHead>
+                    <TableHead className="text-xs">CI</TableHead>
+                    <TableHead className="text-xs">Review</TableHead>
+                    <TableHead className="text-xs">Status</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {Array.from({ length: 4 }).map((_, i) => (
+                    <TableRow key={i}>
+                      <TableCell><div className="h-3.5 w-40 bg-zinc-800 rounded animate-pulse" /></TableCell>
+                      <TableCell><div className="h-4 w-14 bg-zinc-800 rounded-full animate-pulse" /></TableCell>
+                      <TableCell><div className="h-3.5 w-10 bg-zinc-800 rounded animate-pulse" /></TableCell>
+                      <TableCell><div className="h-3.5 w-6 bg-zinc-800 rounded-full animate-pulse" /></TableCell>
+                      <TableCell><div className="h-3.5 w-6 bg-zinc-800 rounded-full animate-pulse" /></TableCell>
+                      <TableCell><div className="h-4 w-16 bg-zinc-800 rounded-full animate-pulse" /></TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          </Card>
+        ) : openIssues.length === 0 ? (
           <Card className="p-4">
             <div className="flex items-center justify-center gap-2 text-zinc-600 text-sm">
               <Inbox className="h-4 w-4" />
