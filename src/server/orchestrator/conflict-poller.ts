@@ -2,17 +2,17 @@ import { setIssueState } from './state.js'
 import { spawnConflictWorker } from './conflict-worker.js'
 import { notify } from './notifier.js'
 import type { Config } from './config.js'
-import type { DbPr } from './github-sync.js'
+import type { GithubPr } from '@prisma/client'
 
-export async function handleConflict(pr: DbPr, config: Config, logFile: string, attempt: number) {
+export async function handleConflict(pr: GithubPr, config: Config, logFile: string, attempt: number) {
   const key = `conflict:${pr.repo}#${pr.number}`
 
   try {
     const result = await spawnConflictWorker(
       pr.repo,
       { number: pr.number, title: pr.title, url: `https://github.com/${pr.repo}/pull/${pr.number}` },
-      pr.head_ref,
-      pr.base_ref,
+      pr.headRef,
+      pr.baseRef,
       config,
       logFile
     )

@@ -5,6 +5,8 @@ import { type TextChannel } from 'discord.js'
 import { loadConfig } from './config.js'
 import { getDiscordClient, dmOwner } from './discord-bot.js'
 import { logActivity } from './activity-log.js'
+import { getPromptTemplate } from './prompt-loader.js'
+import { renderTemplate } from '../lib/template.js'
 
 const dataDir = process.env.ULTRADEV_DATA_DIR || join(process.env.HOME!, '.ultradev')
 const STATE_PATH = join(dataDir, 'error-watcher-state.json')
@@ -203,7 +205,10 @@ async function analyzeAndCreateIssues(
 
   const labelsFlag = labels.map(l => `--label "${l}"`).join(' ')
 
-  const prompt = `You are UltraDev's error triage system. Analyze these production error messages from Discord and create GitHub issues for actionable problems.
+  const tmpl = await getPromptTemplate('error-triage')
+  const prompt = tmpl
+    ? renderTemplate(tmpl.template, { target_repo: targetRepo, error_summary: errorSummary, labels_flag: labelsFlag })
+    : `You are UltraDev's error triage system. Analyze these production error messages from Discord and create GitHub issues for actionable problems.
 
 ## Target repo: ${targetRepo}
 

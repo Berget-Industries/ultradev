@@ -6,7 +6,8 @@ import {
   startGitHubSync, stopGitHubSync, updateGitHubSyncInterval,
   startErrorWatcher, stopErrorWatcher, runErrorWatcher,
 } from '../orchestrator/index.js'
-import { setRuntimePollInterval } from '../orchestrator/config.js'
+import { refreshConfig, invalidateSettingsCache } from '../orchestrator/config.js'
+import { prisma } from '../prisma.js'
 import { getIssueState, setIssueState } from '../orchestrator/state.js'
 import { parseLogStats } from '../orchestrator/log-parser.js'
 
@@ -62,7 +63,13 @@ router.put('/jobs/:name', async (req, res) => {
       }
     }
     if (typeof intervalMs === 'number' && intervalMs > 0) {
-      setRuntimePollInterval(intervalMs)
+      // Persist to settings table
+      await prisma.setting.update({
+        where: { key: 'github.poll_interval_ms' },
+        data: { value: String(intervalMs) },
+      }).catch(() => {})
+      invalidateSettingsCache()
+      await refreshConfig()
       updateGitHubSyncInterval(intervalMs)
     }
   } else if (name === 'error-watcher') {

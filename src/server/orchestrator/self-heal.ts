@@ -3,6 +3,8 @@ import { appendFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { loadConfig } from './config.js'
 import { notify } from './notifier.js'
+import { getPromptTemplate } from './prompt-loader.js'
+import { renderTemplate } from '../lib/template.js'
 
 interface ErrorEntry {
   count: number
@@ -71,12 +73,23 @@ async function attemptFix(component: string, error: string, context: { file?: st
     const logFile = join(config.paths.logs, `heal_${Date.now()}.log`)
     mkdirSync(config.paths.logs, { recursive: true })
 
-    const prompt = `You are fixing an error in the UltraDev system (~/ultradev/).
+    const fileSection = context.file ? `## File: ${context.file}` : ''
+    const extraContext = context.extra ? `## Context: ${context.extra}` : ''
+
+    const tmpl = await getPromptTemplate('self-heal')
+    const prompt = tmpl
+      ? renderTemplate(tmpl.template, {
+          component,
+          error,
+          file: fileSection,
+          extra_context: extraContext,
+        })
+      : `You are fixing an error in the UltraDev system (~/ultradev/).
 
 ## Component: ${component}
 ## Error: ${error}
-${context.file ? `## File: ${context.file}` : ''}
-${context.extra ? `## Context: ${context.extra}` : ''}
+${fileSection}
+${extraContext}
 
 ## Instructions
 1. Read the file(s) involved.

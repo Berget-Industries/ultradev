@@ -7,15 +7,22 @@
     "dev": "tsx src/server/index.ts",
     "build": "vite build",
     "preview": "vite preview",
+    "postinstall": "prisma generate",
+    "predev": "prisma generate",
+    "db:push": "prisma db push",
     "update": "git fetch --tags && git checkout $(git describe --tags --abbrev=0 $(git rev-list --tags --max-count=1)) && pnpm install",
     "changeset": "changeset",
     "version-packages": "changeset version",
     "release": "changeset publish"
   },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
+  },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
+    "@prisma/client": "^7.4.2",
     "@radix-ui/react-scroll-area": "^1.2.10",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
@@ -23,7 +30,6 @@
     "express": "^5.2.1",
     "ioredis": "^5.10.0",
     "lucide-react": "^0.576.0",
-    "pg": "^8.20.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "react-router-dom": "^7.13.1",
@@ -35,10 +41,10 @@
     "@tailwindcss/vite": "^4.2.1",
     "@types/express": "^5.0.6",
     "@types/ioredis": "^5.0.0",
-    "@types/pg": "^8.18.0",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.4",
+    "prisma": "^7.4.2",
     "tailwindcss": "^4.2.1",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
@@ -46,8 +52,9 @@
   },
   "pnpm": {
     "onlyBuiltDependencies": [
-      "better-sqlite3",
-      "esbuild"
+      "@prisma/engines",
+      "esbuild",
+      "prisma"
     ]
   }
 }

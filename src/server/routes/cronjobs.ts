@@ -1,38 +1,55 @@
 import { Router } from 'express'
-import db from '../db.js'
+import { prisma } from '../prisma.js'
+import { toSnakeCase } from '../lib/case.js'
+import type { CronjobStatus } from '@prisma/client'
 
 const router = Router()
 
 router.get('/', async (_req, res) => {
-  const { rows } = await db.query('SELECT * FROM cronjobs ORDER BY created_at DESC')
-  res.json(rows)
+  const rows = await prisma.cronjob.findMany({ orderBy: { createdAt: 'desc' } })
+  res.json(toSnakeCase(rows))
 })
 
 router.post('/', async (req, res) => {
   const { name, schedule, description, command, status } = req.body
   if (!name) return res.status(400).json({ error: 'name is required' })
-  const { rows: [row] } = await db.query(
-    'INSERT INTO cronjobs (name, schedule, description, command, status) VALUES ($1, $2, $3, $4, $5) RETURNING *',
-    [name, schedule || '* * * * *', description || '', command || '', status || 'active']
-  )
-  res.status(201).json(row)
+  const row = await prisma.cronjob.create({
+    data: {
+      name,
+      schedule: schedule || '* * * * *',
+      description: description || '',
+      command: command || '',
+      status: (status || 'active') as CronjobStatus,
+    },
+  })
+  res.status(201).json(toSnakeCase(row))
 })
 
 router.put('/:id', async (req, res) => {
   const { name, schedule, description, command, status, last_run, next_run } = req.body
-  const { rows: [row] } = await db.query(
-    `UPDATE cronjobs SET name = COALESCE($1, name), schedule = COALESCE($2, schedule),
-     description = COALESCE($3, description), command = COALESCE($4, command),
-     status = COALESCE($5, status), last_run = COALESCE($6, last_run),
-     next_run = COALESCE($7, next_run), updated_at = NOW() WHERE id = $8 RETURNING *`,
-    [name, schedule, description, command, status, last_run, next_run, req.params.id]
-  )
-  if (!row) return res.status(404).json({ error: 'Not found' })
-  res.json(row)
+  const id = parseInt(req.params.id)
+  try {
+    const row = await prisma.cronjob.update({
+      where: { id },
+      data: {
+        ...(name !== undefined && { name }),
+        ...(schedule !== undefined && { schedule }),
+        ...(description !== undefined && { description }),
+        ...(command !== undefined && { command }),
+        ...(status !== undefined && { status: status as CronjobStatus }),
+        ...(last_run !== undefined && { lastRun: new Date(last_run) }),
+        ...(next_run !== undefined && { nextRun: new Date(next_run) }),
+      },
+    })
+    res.json(toSnakeCase(row))
+  } catch (err: any) {
+    if (err.code === 'P2025') return res.status(404).json({ error: 'Not found' })
+    throw err
+  }
 })
 
 router.delete('/:id', async (req, res) => {
-  await db.query('DELETE FROM cronjobs WHERE id = $1', [req.params.id])
+  await prisma.cronjob.delete({ where: { id: parseInt(req.params.id) } }).catch(() => {})
   res.json({ ok: true })
 })
 

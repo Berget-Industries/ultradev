@@ -1,8 +1,4 @@
-import db from '../db.js'
-
-interface ProjectRow {
-  repo_url: string
-}
+import { prisma } from '../prisma.js'
 
 /**
  * Get the set of allowed repo identifiers (owner/repo) from active projects.
@@ -10,16 +6,17 @@ interface ProjectRow {
  * Returns a Set of lowercase "owner/repo" strings if projects exist.
  */
 export async function getAllowedRepos(): Promise<Set<string> | null> {
-  const { rows: allProjects } = await db.query('SELECT repo_url FROM projects')
+  const allProjects = await prisma.project.findMany({ select: { repoUrl: true } })
   if (allProjects.length === 0) return null // no projects configured = allow all
 
-  const { rows: activeProjects } = await db.query(
-    "SELECT repo_url FROM projects WHERE status = 'active' AND repo_url != ''"
-  ) as { rows: ProjectRow[] }
+  const activeProjects = await prisma.project.findMany({
+    where: { status: 'active', repoUrl: { not: '' } },
+    select: { repoUrl: true },
+  })
 
   const set = new Set<string>()
   for (const p of activeProjects) {
-    const name = extractNameWithOwner(p.repo_url)
+    const name = extractNameWithOwner(p.repoUrl)
     if (name) set.add(name.toLowerCase())
   }
   return set

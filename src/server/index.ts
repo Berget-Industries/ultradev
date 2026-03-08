@@ -12,9 +12,10 @@ import usageRouter from './routes/usage.js'
 import issuesRouter from './routes/issues.js'
 import performanceRouter from './routes/performance.js'
 import versionRouter from './routes/version.js'
+import settingsRouter from './routes/settings.js'
+import promptTemplatesRouter from './routes/prompt-templates.js'
 import { startOrchestrator } from './orchestrator/index.js'
 import { getRedis, isRedisConnected } from './cache.js'
-import { initDb } from './db.js'
 
 const app = express()
 const PORT = parseInt(process.env.PORT || '4800', 10)
@@ -39,11 +40,10 @@ app.use('/api/usage', usageRouter)
 app.use('/api/issues', issuesRouter)
 app.use('/api/performance', performanceRouter)
 app.use('/api/version', versionRouter)
+app.use('/api/settings', settingsRouter)
+app.use('/api/prompt-templates', promptTemplatesRouter)
 
 async function start() {
-  // Initialize database tables
-  await initDb()
-
   // Vite dev middleware
   const vite = await createServer({
     server: { middlewareMode: true },
