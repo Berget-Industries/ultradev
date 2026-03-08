@@ -320,7 +320,10 @@ async function dispatch() {
 
       // If marked done, check for new review feedback (from DB, no API call)
       if (state?.status === 'done') {
+        // Normalize to ISO string for comparison (pg returns Date objects)
         const latestReviewAt = pr.latest_review_at
+          ? new Date(pr.latest_review_at as any).toISOString()
+          : null
         if (!latestReviewAt || (state.lastReviewAt && latestReviewAt <= state.lastReviewAt)) {
           continue
         }
@@ -516,6 +519,8 @@ export async function hasPendingWork(): Promise<boolean> {
     const state = getIssueState(key)
     if (state?.status === 'done') {
       const latestReviewAt = pr.latest_review_at
+        ? new Date(pr.latest_review_at as any).toISOString()
+        : null
       if (latestReviewAt && (!state.lastReviewAt || latestReviewAt > state.lastReviewAt)) return true
       continue
     }
