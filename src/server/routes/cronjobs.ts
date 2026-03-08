@@ -3,36 +3,37 @@ import db from '../db.js'
 
 const router = Router()
 
-router.get('/', (_req, res) => {
-  const rows = db.prepare('SELECT * FROM cronjobs ORDER BY created_at DESC').all()
+router.get('/', async (_req, res) => {
+  const { rows } = await db.query('SELECT * FROM cronjobs ORDER BY created_at DESC')
   res.json(rows)
 })
 
-router.post('/', (req, res) => {
+router.post('/', async (req, res) => {
   const { name, schedule, description, command, status } = req.body
   if (!name) return res.status(400).json({ error: 'name is required' })
-  const result = db.prepare(
-    'INSERT INTO cronjobs (name, schedule, description, command, status) VALUES (?, ?, ?, ?, ?)'
-  ).run(name, schedule || '* * * * *', description || '', command || '', status || 'active')
-  const row = db.prepare('SELECT * FROM cronjobs WHERE id = ?').get(result.lastInsertRowid)
+  const { rows: [row] } = await db.query(
+    'INSERT INTO cronjobs (name, schedule, description, command, status) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+    [name, schedule || '* * * * *', description || '', command || '', status || 'active']
+  )
   res.status(201).json(row)
 })
 
-router.put('/:id', (req, res) => {
+router.put('/:id', async (req, res) => {
   const { name, schedule, description, command, status, last_run, next_run } = req.body
-  db.prepare(
-    `UPDATE cronjobs SET name = COALESCE(?, name), schedule = COALESCE(?, schedule),
-     description = COALESCE(?, description), command = COALESCE(?, command),
-     status = COALESCE(?, status), last_run = COALESCE(?, last_run),
-     next_run = COALESCE(?, next_run), updated_at = datetime('now') WHERE id = ?`
-  ).run(name, schedule, description, command, status, last_run, next_run, req.params.id)
-  const row = db.prepare('SELECT * FROM cronjobs WHERE id = ?').get(req.params.id)
+  await db.query(
+    `UPDATE cronjobs SET name = COALESCE($1, name), schedule = COALESCE($2, schedule),
+     description = COALESCE($3, description), command = COALESCE($4, command),
+     status = COALESCE($5, status), last_run = COALESCE($6, last_run),
+     next_run = COALESCE($7, next_run), updated_at = NOW() WHERE id = $8`,
+    [name, schedule, description, command, status, last_run, next_run, req.params.id]
+  )
+  const { rows: [row] } = await db.query('SELECT * FROM cronjobs WHERE id = $1', [req.params.id])
   if (!row) return res.status(404).json({ error: 'Not found' })
   res.json(row)
 })
 
-router.delete('/:id', (req, res) => {
-  db.prepare('DELETE FROM cronjobs WHERE id = ?').run(req.params.id)
+router.delete('/:id', async (req, res) => {
+  await db.query('DELETE FROM cronjobs WHERE id = $1', [req.params.id])
   res.json({ ok: true })
 })
 

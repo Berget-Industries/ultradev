@@ -13,6 +13,7 @@ import issuesRouter from './routes/issues.js'
 import performanceRouter from './routes/performance.js'
 import { startOrchestrator } from './orchestrator/index.js'
 import { getRedis, isRedisConnected } from './cache.js'
+import { initDb } from './db.js'
 
 const app = express()
 const PORT = parseInt(process.env.PORT || '4800', 10)
@@ -38,6 +39,9 @@ app.use('/api/issues', issuesRouter)
 app.use('/api/performance', performanceRouter)
 
 async function start() {
+  // Initialize database tables
+  await initDb()
+
   // Vite dev middleware
   const vite = await createServer({
     server: { middlewareMode: true },

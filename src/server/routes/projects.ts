@@ -3,14 +3,14 @@ import db from '../db.js'
 
 const router = Router()
 
-router.get('/', (_req, res) => {
-  const rows = db.prepare(`
-    SELECT p.*, GROUP_CONCAT(pc.cronjob_id) as cronjob_ids
+router.get('/', async (_req, res) => {
+  const { rows } = await db.query(`
+    SELECT p.*, STRING_AGG(pc.cronjob_id::text, ',') as cronjob_ids
     FROM projects p
     LEFT JOIN project_cronjobs pc ON pc.project_id = p.id
     GROUP BY p.id
     ORDER BY p.created_at DESC
-  `).all() as any[]
+  `)
   const result = rows.map(r => ({
     ...r,
     cronjob_ids: r.cronjob_ids ? r.cronjob_ids.split(',').map(Number) : [],
@@ -18,52 +18,54 @@ router.get('/', (_req, res) => {
   res.json(result)
 })
 
-router.get('/:id', (req, res) => {
-  const row = db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id) as any
+router.get('/:id', async (req, res) => {
+  const { rows: [row] } = await db.query('SELECT * FROM projects WHERE id = $1', [req.params.id])
   if (!row) return res.status(404).json({ error: 'Not found' })
-  const cronjobIds = db.prepare('SELECT cronjob_id FROM project_cronjobs WHERE project_id = ?')
-    .all(req.params.id)
-    .map((r: any) => r.cronjob_id)
-  res.json({ ...row, cronjob_ids: cronjobIds })
+  const { rows: cronjobRows } = await db.query(
+    'SELECT cronjob_id FROM project_cronjobs WHERE project_id = $1', [req.params.id]
+  )
+  res.json({ ...row, cronjob_ids: cronjobRows.map(r => r.cronjob_id) })
 })
 
-router.post('/', (req, res) => {
+router.post('/', async (req, res) => {
   const { name, repo_url, description, status, cronjob_ids } = req.body
   if (!name) return res.status(400).json({ error: 'name is required' })
-  const result = db.prepare(
-    'INSERT INTO projects (name, repo_url, description, status) VALUES (?, ?, ?, ?)'
-  ).run(name, repo_url || '', description || '', status || 'active')
-  const projectId = result.lastInsertRowid
+  const { rows: [inserted] } = await db.query(
+    'INSERT INTO projects (name, repo_url, description, status) VALUES ($1, $2, $3, $4) RETURNING *',
+    [name, repo_url || '', description || '', status || 'active']
+  )
   if (Array.isArray(cronjob_ids)) {
-    const insert = db.prepare('INSERT INTO project_cronjobs (project_id, cronjob_id) VALUES (?, ?)')
-    for (const cid of cronjob_ids) insert.run(projectId, cid)
+    for (const cid of cronjob_ids) {
+      await db.query('INSERT INTO project_cronjobs (project_id, cronjob_id) VALUES ($1, $2)', [inserted.id, cid])
+    }
   }
-  const row = db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId) as any
-  res.status(201).json({ ...row, cronjob_ids: cronjob_ids || [] })
+  res.status(201).json({ ...inserted, cronjob_ids: cronjob_ids || [] })
 })
 
-router.put('/:id', (req, res) => {
+router.put('/:id', async (req, res) => {
   const { name, repo_url, description, status, cronjob_ids } = req.body
-  db.prepare(
-    `UPDATE projects SET name = COALESCE(?, name), repo_url = COALESCE(?, repo_url),
-     description = COALESCE(?, description), status = COALESCE(?, status),
-     updated_at = datetime('now') WHERE id = ?`
-  ).run(name, repo_url, description, status, req.params.id)
+  await db.query(
+    `UPDATE projects SET name = COALESCE($1, name), repo_url = COALESCE($2, repo_url),
+     description = COALESCE($3, description), status = COALESCE($4, status),
+     updated_at = NOW() WHERE id = $5`,
+    [name, repo_url, description, status, req.params.id]
+  )
   if (Array.isArray(cronjob_ids)) {
-    db.prepare('DELETE FROM project_cronjobs WHERE project_id = ?').run(req.params.id)
-    const insert = db.prepare('INSERT INTO project_cronjobs (project_id, cronjob_id) VALUES (?, ?)')
-    for (const cid of cronjob_ids) insert.run(req.params.id, cid)
+    await db.query('DELETE FROM project_cronjobs WHERE project_id = $1', [req.params.id])
+    for (const cid of cronjob_ids) {
+      await db.query('INSERT INTO project_cronjobs (project_id, cronjob_id) VALUES ($1, $2)', [req.params.id, cid])
+    }
   }
-  const row = db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id) as any
+  const { rows: [row] } = await db.query('SELECT * FROM projects WHERE id = $1', [req.params.id])
   if (!row) return res.status(404).json({ error: 'Not found' })
-  const ids = db.prepare('SELECT cronjob_id FROM project_cronjobs WHERE project_id = ?')
-    .all(req.params.id)
-    .map((r: any) => r.cronjob_id)
-  res.json({ ...row, cronjob_ids: ids })
+  const { rows: cronjobRows } = await db.query(
+    'SELECT cronjob_id FROM project_cronjobs WHERE project_id = $1', [req.params.id]
+  )
+  res.json({ ...row, cronjob_ids: cronjobRows.map(r => r.cronjob_id) })
 })
 
-router.delete('/:id', (req, res) => {
-  db.prepare('DELETE FROM projects WHERE id = ?').run(req.params.id)
+router.delete('/:id', async (req, res) => {
+  await db.query('DELETE FROM projects WHERE id = $1', [req.params.id])
   res.json({ ok: true })
 })
 

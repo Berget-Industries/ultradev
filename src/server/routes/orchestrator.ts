@@ -21,8 +21,8 @@ router.get('/live', (req, res) => {
     'X-Accel-Buffering': 'no',
   })
 
-  const send = () => {
-    const state = getOrchestratorState()
+  const send = async () => {
+    const state = await getOrchestratorState()
     res.write(`data: ${JSON.stringify(state)}\n\n`)
   }
 
@@ -36,8 +36,8 @@ router.get('/live', (req, res) => {
   })
 })
 
-router.get('/', (_req, res) => {
-  res.json(getOrchestratorState())
+router.get('/', async (_req, res) => {
+  res.json(await getOrchestratorState())
 })
 
 router.get('/activity', (req, res) => {
@@ -45,7 +45,7 @@ router.get('/activity', (req, res) => {
   res.json(getActivityLog(limit))
 })
 
-router.put('/jobs/:name', (req, res) => {
+router.put('/jobs/:name', async (req, res) => {
   const { name } = req.params
   const { enabled, intervalMs } = req.body as { enabled?: boolean; intervalMs?: number }
 
@@ -86,7 +86,7 @@ router.put('/jobs/:name', (req, res) => {
     return
   }
 
-  res.json(getOrchestratorState())
+  res.json(await getOrchestratorState())
 })
 
 router.post('/error-watcher/run', async (_req, res) => {

@@ -9,13 +9,13 @@ interface ProjectRow {
  * Returns null if no projects exist (open access / unconfigured).
  * Returns a Set of lowercase "owner/repo" strings if projects exist.
  */
-export function getAllowedRepos(): Set<string> | null {
-  const allProjects = db.prepare('SELECT repo_url FROM projects').all() as ProjectRow[]
+export async function getAllowedRepos(): Promise<Set<string> | null> {
+  const { rows: allProjects } = await db.query('SELECT repo_url FROM projects')
   if (allProjects.length === 0) return null // no projects configured = allow all
 
-  const activeProjects = db.prepare(
+  const { rows: activeProjects } = await db.query(
     "SELECT repo_url FROM projects WHERE status = 'active' AND repo_url != ''"
-  ).all() as ProjectRow[]
+  ) as { rows: ProjectRow[] }
 
   const set = new Set<string>()
   for (const p of activeProjects) {
@@ -28,8 +28,8 @@ export function getAllowedRepos(): Set<string> | null {
 /**
  * Check if a repo (in "owner/repo" format) is allowed.
  */
-export function isRepoAllowed(nameWithOwner: string): boolean {
-  const allowed = getAllowedRepos()
+export async function isRepoAllowed(nameWithOwner: string): Promise<boolean> {
+  const allowed = await getAllowedRepos()
   if (allowed === null) return true // no projects configured = allow all
   return allowed.has(nameWithOwner.toLowerCase())
 }
