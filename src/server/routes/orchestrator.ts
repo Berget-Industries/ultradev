@@ -22,8 +22,12 @@ router.get('/live', (req, res) => {
   })
 
   const send = async () => {
-    const state = await getOrchestratorState()
-    res.write(`data: ${JSON.stringify(state)}\n\n`)
+    try {
+      const state = await getOrchestratorState()
+      res.write(`data: ${JSON.stringify(state)}\n\n`)
+    } catch (err) {
+      console.error('[sse] Error sending orchestrator state:', err)
+    }
   }
 
   // Send initial state immediately

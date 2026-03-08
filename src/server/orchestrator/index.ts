@@ -7,15 +7,14 @@ import { getMemoryState, getAllIssues, setIssueState } from './state.js'
 import { parseLogStats } from './log-parser.js'
 import { getRateLimitState, setOnResume } from './rate-limit.js'
 import { existsSync } from 'fs'
-import { execFile, execFileSync } from 'child_process'
+import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { join } from 'path'
-
-const execFileAsync = promisify(execFile)
 import { logActivity, getActivityLog } from './activity-log.js'
-
 import { MAINTENANCE_FILE } from '../paths.js'
 import { getAllowedRepos } from './allowed-repos.js'
+
+const execFileAsync = promisify(execFile)
 const startedAt = Date.now()
 
 // --- CI Checks cache (30s TTL) ---
@@ -96,12 +95,12 @@ async function fetchCiChecks(repo: string, prNumber: number): Promise<CiCheck[]>
 }
 
 /** Reset any in_progress jobs to failed — but only if no Claude worker is actually running */
-function recoverStaleJobs() {
+async function recoverStaleJobs() {
   // Check if a claude worker is still alive from before the restart
   let workerRunning = false
   try {
-    const out = execFileSync('pgrep', ['-a', 'claude'], { encoding: 'utf-8', timeout: 5000 })
-    workerRunning = out.includes('--print')
+    const { stdout } = await execFileAsync('pgrep', ['-a', 'claude'], { encoding: 'utf-8', timeout: 5000 })
+    workerRunning = stdout.includes('--print')
   } catch { /* no claude processes */ }
 
   if (workerRunning) {
@@ -140,7 +139,7 @@ export async function startOrchestrator() {
   console.log(`[ultradev] Repo dir: ${config.paths.repos}`)
   console.log(`[ultradev] Discord: ${config.discord.enabled ? 'enabled' : 'disabled'}`)
 
-  recoverStaleJobs()
+  await recoverStaleJobs()
 
   if (config.discord.enabled && config.discord.token) {
     await startDiscordBot()

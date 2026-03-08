@@ -30,38 +30,60 @@ router.get('/:id', async (req, res) => {
 router.post('/', async (req, res) => {
   const { name, repo_url, description, status, cronjob_ids } = req.body
   if (!name) return res.status(400).json({ error: 'name is required' })
-  const { rows: [inserted] } = await db.query(
-    'INSERT INTO projects (name, repo_url, description, status) VALUES ($1, $2, $3, $4) RETURNING *',
-    [name, repo_url || '', description || '', status || 'active']
-  )
-  if (Array.isArray(cronjob_ids)) {
-    for (const cid of cronjob_ids) {
-      await db.query('INSERT INTO project_cronjobs (project_id, cronjob_id) VALUES ($1, $2)', [inserted.id, cid])
+  const client = await db.connect()
+  try {
+    await client.query('BEGIN')
+    const { rows: [inserted] } = await client.query(
+      'INSERT INTO projects (name, repo_url, description, status) VALUES ($1, $2, $3, $4) RETURNING *',
+      [name, repo_url || '', description || '', status || 'active']
+    )
+    if (Array.isArray(cronjob_ids)) {
+      for (const cid of cronjob_ids) {
+        await client.query('INSERT INTO project_cronjobs (project_id, cronjob_id) VALUES ($1, $2)', [inserted.id, cid])
+      }
     }
+    await client.query('COMMIT')
+    res.status(201).json({ ...inserted, cronjob_ids: cronjob_ids || [] })
+  } catch (err) {
+    await client.query('ROLLBACK')
+    throw err
+  } finally {
+    client.release()
   }
-  res.status(201).json({ ...inserted, cronjob_ids: cronjob_ids || [] })
 })
 
 router.put('/:id', async (req, res) => {
   const { name, repo_url, description, status, cronjob_ids } = req.body
-  await db.query(
-    `UPDATE projects SET name = COALESCE($1, name), repo_url = COALESCE($2, repo_url),
-     description = COALESCE($3, description), status = COALESCE($4, status),
-     updated_at = NOW() WHERE id = $5`,
-    [name, repo_url, description, status, req.params.id]
-  )
-  if (Array.isArray(cronjob_ids)) {
-    await db.query('DELETE FROM project_cronjobs WHERE project_id = $1', [req.params.id])
-    for (const cid of cronjob_ids) {
-      await db.query('INSERT INTO project_cronjobs (project_id, cronjob_id) VALUES ($1, $2)', [req.params.id, cid])
+  const client = await db.connect()
+  try {
+    await client.query('BEGIN')
+    const { rows: [row] } = await client.query(
+      `UPDATE projects SET name = COALESCE($1, name), repo_url = COALESCE($2, repo_url),
+       description = COALESCE($3, description), status = COALESCE($4, status),
+       updated_at = NOW() WHERE id = $5 RETURNING *`,
+      [name, repo_url, description, status, req.params.id]
+    )
+    if (!row) {
+      await client.query('ROLLBACK')
+      return res.status(404).json({ error: 'Not found' })
     }
+    if (Array.isArray(cronjob_ids)) {
+      await client.query('DELETE FROM project_cronjobs WHERE project_id = $1', [req.params.id])
+      for (const cid of cronjob_ids) {
+        await client.query('INSERT INTO project_cronjobs (project_id, cronjob_id) VALUES ($1, $2)', [req.params.id, cid])
+      }
+    }
+    await client.query('COMMIT')
+    const { rows: cronjobRows } = await db.query(
+      'SELECT cronjob_id FROM project_cronjobs WHERE project_id = $1', [req.params.id]
+    )
+    res.json({ ...row, cronjob_ids: cronjobRows.map(r => r.cronjob_id) })
+  } catch (err) {
+    await client.query('ROLLBACK')
+    throw err
+  } finally {
+    client.release()
   }
-  const { rows: [row] } = await db.query('SELECT * FROM projects WHERE id = $1', [req.params.id])
-  if (!row) return res.status(404).json({ error: 'Not found' })
-  const { rows: cronjobRows } = await db.query(
-    'SELECT cronjob_id FROM project_cronjobs WHERE project_id = $1', [req.params.id]
-  )
-  res.json({ ...row, cronjob_ids: cronjobRows.map(r => r.cronjob_id) })
 })
 
 router.delete('/:id', async (req, res) => {
