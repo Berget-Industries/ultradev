@@ -45,13 +45,12 @@ router.post('/', async (req, res) => {
 
 router.put('/:id', async (req, res) => {
   const { title, description, github_url, project_id } = req.body
-  await db.query(
+  const { rows: [row] } = await db.query(
     `UPDATE tasks SET title = COALESCE($1, title), description = COALESCE($2, description),
      github_url = COALESCE($3, github_url), project_id = COALESCE($4, project_id),
-     updated_at = NOW() WHERE id = $5`,
+     updated_at = NOW() WHERE id = $5 RETURNING *`,
     [title, description, github_url, project_id, req.params.id]
   )
-  const { rows: [row] } = await db.query('SELECT * FROM tasks WHERE id = $1', [req.params.id])
   if (!row) return res.status(404).json({ error: 'Not found' })
   res.json(row)
 })
@@ -61,11 +60,10 @@ router.put('/:id/move', async (req, res) => {
   if (!column_id || position === undefined) {
     return res.status(400).json({ error: 'column_id and position are required' })
   }
-  await db.query(
-    `UPDATE tasks SET column_id = $1, position = $2, updated_at = NOW() WHERE id = $3`,
+  const { rows: [row] } = await db.query(
+    `UPDATE tasks SET column_id = $1, position = $2, updated_at = NOW() WHERE id = $3 RETURNING *`,
     [column_id, position, req.params.id]
   )
-  const { rows: [row] } = await db.query('SELECT * FROM tasks WHERE id = $1', [req.params.id])
   if (!row) return res.status(404).json({ error: 'Not found' })
   res.json(row)
 })
