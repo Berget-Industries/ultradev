@@ -1,6 +1,9 @@
 import { Router } from 'express'
-import { execFileSync } from 'child_process'
 import { cached } from '../cache.js'
+import { loadConfig } from '../orchestrator/config.js'
+import { getOpenIssues, getPrsByRepos, type DbPr } from '../orchestrator/github-sync.js'
+import { scoreIssue } from '../orchestrator/prioritize.js'
+import { getIssueState } from '../orchestrator/state.js'
 
 const router = Router()
 
@@ -10,6 +13,7 @@ interface LinkedPr {
   state: string
   ciStatus: 'passing' | 'failing' | 'pending' | 'none'
   mergeable: boolean
+  mergeableState: string | null
   reviewDecision: string | null
 }
 
@@ -18,143 +22,97 @@ interface OpenIssue {
   number: number
   title: string
   labels: string[]
-  linkedPr: LinkedPr | null
-  status: 'no_pr' | 'ci_pending' | 'ci_failing' | 'changes_requested' | 'ready_to_merge' | 'merged'
+  linkedPrs: LinkedPr[]
+  status: 'no_pr' | 'ci_pending' | 'ci_failing' | 'changes_requested' | 'has_conflicts' | 'ready_to_merge' | 'merged'
+  priority: number
 }
 
-// Legacy in-memory cache removed — now uses Redis via cached()
-
-function gh(...args: string[]): string {
-  try {
-    return execFileSync('gh', args, {
-      encoding: 'utf-8',
-      timeout: 30_000,
-      env: { ...process.env, GH_PAGER: '' },
-    }).trim()
-  } catch {
-    return ''
+function toLinkedPr(pr: DbPr): LinkedPr {
+  return {
+    number: pr.number,
+    url: `https://github.com/${pr.repo}/pull/${pr.number}`,
+    state: pr.state,
+    ciStatus: pr.ci_status as LinkedPr['ciStatus'],
+    mergeable: pr.mergeable === 'MERGEABLE',
+    mergeableState: pr.mergeable || null,
+    reviewDecision: pr.review_decision || null,
   }
 }
 
-function deriveCiStatus(statusCheckRollup: any[] | null): 'passing' | 'failing' | 'pending' | 'none' {
-  // Filter out ghost entries with no name/status/conclusion
-  const checks = (statusCheckRollup || []).filter(
-    (c: any) => c.name || c.context || c.status || c.conclusion
-  )
-  if (checks.length === 0) return 'none'
-  const hasFailure = checks.some(
-    (c: any) => c.conclusion === 'FAILURE' || c.conclusion === 'failure' ||
-                 c.conclusion === 'TIMED_OUT' || c.conclusion === 'timed_out'
-  )
-  if (hasFailure) return 'failing'
-  const hasPending = checks.some(
-    (c: any) => c.status === 'IN_PROGRESS' || c.status === 'QUEUED' || c.status === 'PENDING' ||
-                 c.status === 'in_progress' || c.status === 'queued' || c.status === 'pending'
-  )
-  if (hasPending) return 'pending'
-  return 'passing'
-}
+/** Derive overall issue status from all linked PRs. Looks at the latest open PR first. */
+function deriveStatus(prs: LinkedPr[]): OpenIssue['status'] {
+  if (prs.length === 0) return 'no_pr'
+  if (prs.every(pr => pr.state === 'MERGED' || pr.state === 'merged')) return 'merged'
 
-function deriveStatus(pr: LinkedPr | null): OpenIssue['status'] {
-  if (!pr) return 'no_pr'
-  if (pr.state === 'MERGED' || pr.state === 'merged') return 'merged'
-  if (pr.reviewDecision === 'CHANGES_REQUESTED') return 'changes_requested'
-  if (pr.ciStatus === 'failing') return 'ci_failing'
-  if (pr.ciStatus === 'pending') return 'ci_pending'
-  if (pr.ciStatus === 'passing' && pr.mergeable && pr.reviewDecision !== 'CHANGES_REQUESTED') return 'ready_to_merge'
+  const openPrs = prs.filter(pr => pr.state === 'OPEN' || pr.state === 'open')
+  if (openPrs.length === 0) return 'no_pr'
+
+  const latest = openPrs[openPrs.length - 1]
+  if (latest.reviewDecision === 'CHANGES_REQUESTED') return 'changes_requested'
+  if (latest.mergeableState === 'CONFLICTING') return 'has_conflicts'
+  if (latest.ciStatus === 'failing') return 'ci_failing'
+  if (latest.ciStatus === 'pending') return 'ci_pending'
+  if (latest.ciStatus === 'passing' && latest.mergeable && latest.reviewDecision !== 'CHANGES_REQUESTED') return 'ready_to_merge'
   return 'no_pr'
 }
 
 async function fetchIssues(): Promise<OpenIssue[]> {
-  // 1. Get all open issues assigned to bergetUltraDev
-  const issuesRaw = gh(
-    'search', 'issues',
-    '--assignee', 'bergetUltraDev',
-    '--state', 'open',
-    '--json', 'repository,number,title,labels',
-    '--limit', '50'
-  )
-  if (!issuesRaw) return []
+  const config = loadConfig()
+  const username = config.github.username
 
-  let issues: any[]
-  try {
-    issues = JSON.parse(issuesRaw)
-  } catch {
-    return []
+  // Read from DB (populated by github-sync)
+  const issues = await getOpenIssues(username)
+  if (issues.length === 0) return []
+
+  const repos = [...new Set(issues.map(i => i.repo))]
+  const allPrs = await getPrsByRepos(username, repos)
+
+  // Build issue→PRs map from linked_issue_numbers
+  const prMap = new Map<string, LinkedPr[]>()
+  for (const pr of allPrs) {
+    const linkedNums: number[] = pr.linked_issue_numbers || []
+    for (const issueNum of linkedNums) {
+      const key = `${pr.repo}#${issueNum}`
+      const existing = prMap.get(key) || []
+      existing.push(toLinkedPr(pr))
+      prMap.set(key, existing)
+    }
   }
 
   const results: OpenIssue[] = []
 
   for (const issue of issues) {
-    const repo: string = issue.repository?.nameWithOwner || issue.repository?.name || ''
-    if (!repo) continue
+    const labels: string[] = Array.isArray(issue.labels) ? issue.labels : []
+    const key = `${issue.repo}#${issue.number}`
+    const linkedPrs = prMap.get(key) || []
+    linkedPrs.sort((a, b) => a.number - b.number)
 
-    const labels: string[] = (issue.labels || []).map((l: any) => l.name || l)
-
-    // 2. Check for linked PR via branch naming convention
-    const repoParts = repo.split('/')
-    const safeKey = `${repoParts[0]}_${repoParts[1]}_${issue.number}`
-    const branchHead = `ultradev/${safeKey}`
-
-    let linkedPr: LinkedPr | null = null
-
-    const prRaw = gh(
-      'pr', 'list',
-      '--repo', repo,
-      '--head', branchHead,
-      '--json', 'number,url,state,statusCheckRollup,mergeable,reviewDecision',
-      '--limit', '1'
-    )
-
-    if (prRaw) {
-      try {
-        const prs = JSON.parse(prRaw)
-        if (prs.length > 0) {
-          const pr = prs[0]
-          const ciStatus = deriveCiStatus(pr.statusCheckRollup || null)
-          linkedPr = {
-            number: pr.number,
-            url: pr.url,
-            state: pr.state,
-            ciStatus,
-            mergeable: pr.mergeable === 'MERGEABLE' || pr.mergeable === true,
-            reviewDecision: pr.reviewDecision || null,
-          }
-        }
-      } catch { /* ignore parse errors */ }
-    }
-
-    const status = deriveStatus(linkedPr)
-
-    // Filter out merged
+    const status = deriveStatus(linkedPrs)
     if (status === 'merged') continue
 
+    const state = getIssueState(key)
+    const score = scoreIssue({ labels, createdAt: issue.created_at }, state)
+
     results.push({
-      repo,
+      repo: issue.repo,
       number: issue.number,
       title: issue.title,
       labels,
-      linkedPr,
+      linkedPrs,
       status,
+      priority: score.total,
     })
   }
 
-  // Sort: ready_to_merge first, then changes_requested, ci_failing, ci_pending, no_pr
-  const statusOrder: Record<string, number> = {
-    ready_to_merge: 0,
-    changes_requested: 1,
-    ci_failing: 2,
-    ci_pending: 3,
-    no_pr: 4,
-  }
-  results.sort((a, b) => (statusOrder[a.status] ?? 5) - (statusOrder[b.status] ?? 5))
+  results.sort((a, b) => b.priority - a.priority)
 
   return results
 }
 
 router.get('/', async (_req, res) => {
   try {
-    const issues = await cached<OpenIssue[]>('issues:open', 60, fetchIssues)
+    // Short TTL since data is already in DB — just avoiding concurrent computation
+    const issues = await cached<OpenIssue[]>('issues:open', 10, fetchIssues)
     res.json(issues)
   } catch (err: any) {
     console.error('[issues] Error fetching issues:', err)

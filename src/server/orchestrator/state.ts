@@ -10,7 +10,8 @@ export interface IssueState {
   repo?: string
   number?: number
   type?: string
-  prUrl?: string | null
+  prUrl?: string | null       // latest PR URL (backwards compat)
+  prUrls?: string[]           // all PR URLs (history)
   error?: string
   madeProgress?: boolean
   notifiedMaxRetries?: boolean
@@ -53,6 +54,10 @@ export function getIssueState(key: string): IssueState | null {
   return state.issues[key] || null
 }
 
+/**
+ * Merge-update state for a work item. Uses load→merge→save (not atomic).
+ * Safe because the global worker lock ensures only one worker runs at a time.
+ */
 export function setIssueState(key: string, data: Partial<IssueState>) {
   const state = load()
   state.issues[key] = { ...state.issues[key], ...data, updatedAt: Date.now() }

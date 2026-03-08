@@ -1,142 +1,17 @@
 import { execFileSync } from 'child_process'
-import { existsSync } from 'fs'
-import { loadConfig } from './config.js'
-import { MAINTENANCE_FILE } from '../paths.js'
 import { spawnWorker, makeLogPath } from './worker.js'
 import { getIssueState, setIssueState } from './state.js'
 import { notify } from './notifier.js'
-import { isRateLimited } from './rate-limit.js'
-import { isWorkerSlotFree, claimWorkerSlot, releaseWorkerSlot } from './worker-lock.js'
-import { logActivity } from './activity-log.js'
-import { isRepoAllowed } from './allowed-repos.js'
-import { hasPendingPrReviews } from './pr-poller.js'
+import { releaseWorkerSlot } from './worker-lock.js'
+import type { Config } from './config.js'
 
-const MAX_ATTEMPTS = 3
-let lastPollTime: number | null = null
-let pollStatus: 'idle' | 'polling' | 'error' = 'idle'
-let intervalId: ReturnType<typeof setInterval> | null = null
-let enabled = false
-
-export function getPollerState() {
-  return { lastPollTime, pollStatus, activeWorkers: isWorkerSlotFree() ? 0 : 1, enabled }
+interface IssueSummary {
+  repository: { nameWithOwner: string }
+  number: number
+  title: string
 }
 
-export function stopPolling() {
-  if (intervalId !== null) {
-    clearInterval(intervalId)
-    intervalId = null
-  }
-  enabled = false
-  console.log('[poller] Polling stopped')
-}
-
-export function updatePollingInterval(intervalMs: number) {
-  if (intervalId !== null) {
-    clearInterval(intervalId)
-    intervalId = null
-  }
-  if (enabled) {
-    intervalId = setInterval(pollGitHub, intervalMs)
-    console.log(`[poller] Interval updated to ${intervalMs / 1000}s`)
-  }
-}
-
-export async function pollGitHub() {
-  // Maintenance mode — skip poll
-  if (existsSync(MAINTENANCE_FILE)) {
-    console.log('[poller] Maintenance mode — skipping poll')
-    return
-  }
-
-  // Skip if rate limited
-  if (isRateLimited()) {
-    console.log('[poller] Rate limited, skipping poll')
-    return
-  }
-
-  // Single task mode: skip if ANY worker is already running (global lock)
-  if (!isWorkerSlotFree()) {
-    console.log('[poller] Worker active (global lock), skipping poll')
-    return
-  }
-
-  // Yield to PR reviews — requested changes take priority over new issues
-  if (hasPendingPrReviews()) {
-    console.log('[poller] Pending PR reviews exist — yielding priority to pr-poller')
-    logActivity('poller', 'Yielding to PR reviews (requested changes have priority)')
-    return
-  }
-
-  const config = loadConfig()
-  const username = config.github.username
-  pollStatus = 'polling'
-
-  try {
-    const raw = execFileSync('gh', [
-      'search', 'issues',
-      '--assignee', username,
-      '--state', 'open',
-      '--json', 'repository,number,title,url,labels',
-      '--limit', '20',
-    ], { encoding: 'utf-8', timeout: 30000 })
-
-    const issues = JSON.parse(raw)
-    lastPollTime = Date.now()
-    pollStatus = 'idle'
-    logActivity('poller', `Polled GitHub — ${issues.length} open issue(s) found`)
-
-    for (const issue of issues) {
-      const repo = issue.repository.nameWithOwner
-      if (!(await isRepoAllowed(repo))) continue
-
-      const key = `${repo}#${issue.number}`
-      const state = getIssueState(key)
-
-      if (state?.status === 'done') continue
-
-      if (state?.status === 'in_progress') {
-        if (Date.now() - (state.updatedAt || 0) > 20 * 60 * 1000) {
-          console.log(`[poller] ${key} appears stuck, marking for retry`)
-          setIssueState(key, { status: 'failed', error: 'Timed out (stuck)' })
-        }
-        continue
-      }
-
-      if ((state?.attempts || 0) >= MAX_ATTEMPTS) {
-        if (!state?.notifiedMaxRetries) {
-          notify(`⚠️ **${key}** — Gave up after ${MAX_ATTEMPTS} attempts. Needs human help.`)
-          setIssueState(key, { notifiedMaxRetries: true })
-        }
-        continue
-      }
-
-      const attempt = (state?.attempts || 0) + 1
-      const isRetry = attempt > 1
-
-      console.log(`[poller] ${isRetry ? 'Retrying' : 'New issue'}: ${key} (attempt ${attempt}/${MAX_ATTEMPTS})`)
-      notify(isRetry
-        ? `🔄 Retrying **${key}** (attempt ${attempt}/${MAX_ATTEMPTS})...`
-        : `🔍 Picked up: **${key}** — ${issue.title}`
-      )
-
-      // Claim global slot BEFORE async call to prevent race
-      if (!claimWorkerSlot()) {
-        console.log('[poller] Could not claim worker slot, skipping')
-        break
-      }
-      handleIssue(issue, config, attempt)
-      // Single task — stop looking
-      break
-    }
-  } catch (err: any) {
-    console.error('[poller] Error polling GitHub:', err.message)
-    logActivity('poller', `Error: ${err.message}`)
-    pollStatus = 'error'
-    lastPollTime = Date.now()
-  }
-}
-
-async function handleIssue(issue: any, config: any, attempt: number) {
+export async function handleIssue(issue: IssueSummary, config: Config, attempt: number) {
   const repo = issue.repository.nameWithOwner
   const num = issue.number
   const key = `${repo}#${num}`
@@ -160,7 +35,9 @@ async function handleIssue(issue: any, config: any, attempt: number) {
     const result = await spawnWorker(repo, prompt, config, key, logFile)
 
     if (result.success && result.prUrl) {
-      setIssueState(key, { status: 'done', prUrl: result.prUrl, logFile: result.logFile })
+      const existingUrls = getIssueState(key)?.prUrls || []
+      const prUrls = existingUrls.includes(result.prUrl) ? existingUrls : [...existingUrls, result.prUrl]
+      setIssueState(key, { status: 'done', prUrl: result.prUrl, prUrls, logFile: result.logFile })
       notify(`✅ **${key}** — PR created: ${result.prUrl}`)
     } else if (result.success) {
       setIssueState(key, { status: 'done', prUrl: null, logFile: result.logFile })
@@ -238,16 +115,3 @@ ${prInstructions}
 - Do not ask questions — make reasonable decisions and proceed.`
 }
 
-export function startPolling() {
-  const config = loadConfig()
-  const interval = config.github.pollIntervalMs
-
-  if (intervalId !== null) {
-    clearInterval(intervalId)
-  }
-
-  enabled = true
-  console.log(`[poller] Polling every ${interval / 1000}s as ${config.github.username} (single task mode)`)
-  pollGitHub()
-  intervalId = setInterval(pollGitHub, interval)
-}

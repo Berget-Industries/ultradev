@@ -1,18 +1,18 @@
-import { startPolling, stopPolling, updatePollingInterval, getPollerState } from './github-poller.js'
-import { startPrPolling, stopPrPolling, updatePrPollingInterval, getPrPollerState } from './pr-poller.js'
+import { startGitHubSync, stopGitHubSync, updateGitHubSyncInterval, getGitHubSyncState, getDispatchState } from './github-sync.js'
 import { startDiscordBot, getDiscordBotStatus } from './discord-bot.js'
 import { startErrorWatcher, stopErrorWatcher, getErrorWatcherState, runErrorWatcher } from './error-watcher.js'
 import { loadConfig } from './config.js'
 import { getMemoryState, getAllIssues, setIssueState } from './state.js'
 import { parseLogStats } from './log-parser.js'
 import { getRateLimitState, setOnResume } from './rate-limit.js'
+import { isWorkerSlotFree } from './worker-lock.js'
 import { existsSync } from 'fs'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
-import { join } from 'path'
 import { logActivity, getActivityLog } from './activity-log.js'
 import { MAINTENANCE_FILE } from '../paths.js'
 import { getAllowedRepos } from './allowed-repos.js'
+import db from '../db.js'
 
 const execFileAsync = promisify(execFile)
 const startedAt = Date.now()
@@ -41,6 +41,7 @@ interface PrLookupEntry {
 const prLookupCache = new Map<string, PrLookupEntry>()
 const PR_LOOKUP_TTL = 30_000
 
+/** Look up PR URL by branch name — uses DB, no API calls */
 async function lookupPrByBranch(repo: string, branchName: string): Promise<string | null> {
   const cacheKey = `${repo}:${branchName}`
   const cached = prLookupCache.get(cacheKey)
@@ -49,12 +50,11 @@ async function lookupPrByBranch(repo: string, branchName: string): Promise<strin
   }
 
   try {
-    const { stdout } = await execFileAsync('gh', [
-      'pr', 'list', '--repo', repo, '--head', branchName,
-      '--json', 'number,url', '--limit', '1',
-    ], { timeout: 10_000, encoding: 'utf-8' })
-    const prs = JSON.parse(stdout)
-    const prUrl = prs.length > 0 ? prs[0].url : null
+    const { rows } = await db.query(
+      'SELECT number FROM github_prs WHERE repo = $1 AND head_ref = $2 LIMIT 1',
+      [repo, branchName]
+    )
+    const prUrl = rows.length > 0 ? `https://github.com/${repo}/pull/${rows[0].number}` : null
     prLookupCache.set(cacheKey, { prUrl, fetchedAt: Date.now() })
     return prUrl
   } catch {
@@ -63,6 +63,7 @@ async function lookupPrByBranch(repo: string, branchName: string): Promise<strin
   }
 }
 
+/** Fetch CI checks from PostgreSQL (synced by github-sync) — no API calls */
 async function fetchCiChecks(repo: string, prNumber: number): Promise<CiCheck[]> {
   const cacheKey = `${repo}#${prNumber}`
   const cached = ciCache.get(cacheKey)
@@ -71,15 +72,12 @@ async function fetchCiChecks(repo: string, prNumber: number): Promise<CiCheck[]>
   }
 
   try {
-    const { stdout } = await execFileAsync('gh', [
-      'pr', 'view', String(prNumber),
-      '--repo', repo,
-      '--json', 'statusCheckRollup',
-    ], { timeout: 10_000, encoding: 'utf-8' })
-
-    const data = JSON.parse(stdout)
-    const rollup = data.statusCheckRollup || []
-    const checks: CiCheck[] = rollup.map((c: any) => ({
+    const { rows } = await db.query(
+      'SELECT status_check_rollup FROM github_prs WHERE repo = $1 AND number = $2',
+      [repo, prNumber]
+    )
+    const rollup = rows[0]?.status_check_rollup || []
+    const checks: CiCheck[] = (Array.isArray(rollup) ? rollup : []).map((c: any) => ({
       name: c.name || c.context || 'unknown',
       status: c.status || c.state || 'UNKNOWN',
       conclusion: c.conclusion || null,
@@ -87,8 +85,7 @@ async function fetchCiChecks(repo: string, prNumber: number): Promise<CiCheck[]>
 
     ciCache.set(cacheKey, { checks, fetchedAt: Date.now() })
     return checks
-  } catch (err) {
-    // On error, return cached (even if stale) or empty
+  } catch {
     if (cached) return cached.checks
     return []
   }
@@ -126,8 +123,7 @@ async function recoverStaleJobs() {
 
 export { getActivityLog }
 export {
-  startPolling, stopPolling, updatePollingInterval,
-  startPrPolling, stopPrPolling, updatePrPollingInterval,
+  startGitHubSync, stopGitHubSync, updateGitHubSyncInterval,
   startErrorWatcher, stopErrorWatcher, getErrorWatcherState, runErrorWatcher,
 }
 
@@ -145,15 +141,14 @@ export async function startOrchestrator() {
     await startDiscordBot()
   }
 
-  startPolling()
-  startPrPolling()
+  // Start github-sync — drives everything: sync -> dispatch -> work
+  startGitHubSync()
   startErrorWatcher()
 
-  // Auto-resume pollers after rate limit clears
+  // Auto-resume after rate limit clears
   setOnResume(() => {
-    console.log('[rate-limit] Auto-resuming all pollers')
-    startPolling()
-    startPrPolling()
+    console.log('[rate-limit] Auto-resuming github-sync')
+    startGitHubSync()
   })
 
   logActivity('system', 'Orchestrator started')
@@ -169,8 +164,8 @@ const ORCHESTRATOR_CACHE_TTL = 5_000 // 5 seconds
 
 async function computeOrchestratorState() {
   const config = loadConfig()
-  const ghPoller = getPollerState()
-  const prPoller = getPrPollerState()
+  const ghSync = getGitHubSyncState()
+  const dispatchState = getDispatchState()
 
   const discordStatus = getDiscordBotStatus()
   const issues = getAllIssues()
@@ -191,19 +186,19 @@ async function computeOrchestratorState() {
     allowedRepos: allowed ? [...allowed] : null,
     jobs: [
       {
-        name: 'Issue Poller',
+        name: 'GitHub Sync',
         schedule: `Every ${config.github.pollIntervalMs / 1000}s`,
-        lastRun: ghPoller.lastPollTime,
-        status: ghPoller.pollStatus,
-        activeWorkers: ghPoller.activeWorkers,
-        enabled: ghPoller.enabled,
+        lastRun: ghSync.lastSyncTime,
+        status: ghSync.syncStatus,
+        enabled: ghSync.enabled,
       },
       {
-        name: 'PR Poller',
+        name: 'Work Dispatcher',
         schedule: `Every ${config.github.pollIntervalMs / 1000}s`,
-        lastRun: prPoller.lastPollTime,
-        status: prPoller.pollStatus,
-        enabled: prPoller.enabled,
+        lastRun: dispatchState.lastDispatchTime,
+        status: dispatchState.dispatchStatus,
+        activeWorkers: isWorkerSlotFree() ? 0 : 1,
+        enabled: dispatchState.enabled,
       },
       {
         name: 'Error Watcher',
@@ -236,7 +231,7 @@ async function computeOrchestratorState() {
           key,
           repo: state.repo || key.split('#')[0],
           number: state.number,
-          type: state.type || (key.startsWith('pr:') ? 'pr' : 'issue'),
+          type: state.type || (key.startsWith('pr:') ? 'pr' : key.startsWith('conflict:') ? 'conflict' : 'issue'),
           status: state.status,
           attempts: state.attempts || 0,
           prUrl: resolvedPrUrl,
