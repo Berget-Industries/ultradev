@@ -32,6 +32,11 @@ import {
   Minus,
   ChevronLeft,
   ChevronRight,
+  TrendingUp,
+  Target,
+  Timer,
+  Hammer,
+  BarChart3,
 } from 'lucide-react'
 import { Card } from '@/components/ui/card'
 import { Switch } from '@/components/ui/switch'
@@ -146,6 +151,40 @@ interface StatsData {
   hostname: string
 }
 
+interface PerformanceData {
+  totalTasks: number
+  successCount: number
+  failedCount: number
+  successRate: number
+  prsOpened: number
+  avgAttemptsPerTask: number
+  avgDurationMs: number | null
+  avgCostUsd: number | null
+  totalCostUsd: number
+  totalTokens: number
+  totalToolCalls: number
+  avgTokensPerTask: number
+  avgToolCallsPerTask: number
+  prsPerHour: number | null
+  prsPerDay: number | null
+  prsPerWeek: number | null
+  tasksPerHour: number | null
+  tasksPerDay: number | null
+  tasksPerWeek: number | null
+  costPerDay: number | null
+  costPerWeek: number | null
+  repos: { name: string; tasks: number; prs: number; successRate: number }[]
+  daily: {
+    date: string
+    tasks: number
+    prs: number
+    successes: number
+    failures: number
+    costUsd: number
+    tokens: number
+  }[]
+}
+
 interface OpenIssueLinkedPr {
   number: number
   url: string
@@ -168,6 +207,12 @@ interface OpenIssue {
 
 function formatTokens(n: number): string {
   return n.toLocaleString()
+}
+
+function formatCompact(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
+  return String(n)
 }
 
 function formatDuration(ms: number | null): string {
@@ -359,6 +404,31 @@ function LiveDuration({ updatedAt, durationMs }: { updatedAt: number | null; dur
   return <span className="font-mono tabular-nums">{formatDuration(elapsed)}</span>
 }
 
+// --- Perf Stat Cell ---
+
+function PerfStat({ icon: Icon, label, value, sub, rates, color }: { icon: typeof Zap; label: string; value: string; sub?: string; rates?: { label: string; value: string }[]; color: string }) {
+  return (
+    <Card className="p-3 flex flex-col gap-1">
+      <div className="flex items-center gap-1.5">
+        <Icon className={`h-3.5 w-3.5 ${color}`} />
+        <span className="text-xs text-zinc-500 font-medium">{label}</span>
+      </div>
+      <span className={`text-2xl font-bold font-mono leading-none ${color}`}>{value}</span>
+      {sub && <span className="text-xs text-zinc-500 font-mono">{sub}</span>}
+      {rates && (
+        <div className="flex gap-3 mt-1 pt-1 border-t border-zinc-800">
+          {rates.map((r) => (
+            <div key={r.label} className="flex flex-col">
+              <span className="text-xs font-mono text-zinc-400">{r.value}</span>
+              <span className="text-[10px] text-zinc-600">{r.label}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  )
+}
+
 // --- Main Component ---
 
 const HISTORY_PAGE_SIZE = 10
@@ -372,6 +442,7 @@ export default function DashboardPage() {
   const { data: stats } = useStore<StatsData>('/stats', () => api.get('/stats'), { pollInterval: 5_000 })
   const { data: openIssuesData } = useStore<OpenIssue[]>('/issues', () => api.get('/issues'), { pollInterval: 60_000 })
   const { data: activityLogData } = useStore<{ ts: number; source: string; message: string }[]>('/orchestrator/activity', () => api.get('/orchestrator/activity?limit=50'), { pollInterval: 10_000 })
+  const { data: perfData } = useStore<PerformanceData>('/performance', () => api.get('/performance'), { pollInterval: 60_000 })
   const openIssues = openIssuesData ?? []
   const activityLog = activityLogData ?? []
 
@@ -516,6 +587,47 @@ export default function DashboardPage() {
             </div>
           </div>
         </Card>
+      )}
+
+      {/* ---- Performance Stats ---- */}
+      {perfData && (
+        <div>
+          <div className="flex items-center gap-1.5 mb-2">
+            <BarChart3 className="h-4 w-4 text-zinc-400" />
+            <span className="text-sm font-medium text-zinc-300">Performance</span>
+          </div>
+          <div className="grid grid-cols-5 lg:grid-cols-9 gap-2">
+            <PerfStat icon={GitPullRequest} label="PRs/h" value={perfData.prsPerHour != null ? String(perfData.prsPerHour) : '--'} sub={`${perfData.prsOpened} total`} color="text-cyan-400" rates={[{ label: '/day', value: perfData.prsPerDay != null ? String(perfData.prsPerDay) : '--' }, { label: '/week', value: perfData.prsPerWeek != null ? String(perfData.prsPerWeek) : '--' }]} />
+            <PerfStat icon={Zap} label="Tasks/h" value={perfData.tasksPerHour != null ? String(perfData.tasksPerHour) : '--'} sub={`${perfData.totalTasks} total`} color="text-blue-400" rates={[{ label: '/day', value: perfData.tasksPerDay != null ? String(perfData.tasksPerDay) : '--' }, { label: '/week', value: perfData.tasksPerWeek != null ? String(perfData.tasksPerWeek) : '--' }]} />
+            <PerfStat icon={Target} label="Success" value={`${perfData.successRate}%`} sub={`${perfData.successCount} ok / ${perfData.failedCount} fail`} color="text-green-400" />
+            <PerfStat icon={Timer} label="Avg Duration" value={formatDuration(perfData.avgDurationMs)} sub={`${perfData.avgAttemptsPerTask} avg attempts`} color="text-yellow-400" />
+            <PerfStat icon={DollarSign} label="Cost" value={`$${perfData.totalCostUsd.toFixed(2)}`} sub={perfData.avgCostUsd != null ? `$${perfData.avgCostUsd.toFixed(2)}/task` : '--'} color="text-emerald-400" rates={[{ label: '/day', value: perfData.costPerDay != null ? `$${perfData.costPerDay}` : '--' }, { label: '/week', value: perfData.costPerWeek != null ? `$${perfData.costPerWeek}` : '--' }]} />
+            <PerfStat icon={Hash} label="Tokens" value={formatCompact(perfData.totalTokens)} sub={`${formatCompact(perfData.avgTokensPerTask)}/task`} color="text-purple-400" />
+            <PerfStat icon={Hammer} label="Tool Calls" value={formatCompact(perfData.totalToolCalls)} sub={`${perfData.avgToolCallsPerTask}/task`} color="text-orange-400" />
+            {/* Daily sparkline */}
+            <Card className="p-3 col-span-2 flex flex-col justify-between">
+              <span className="text-xs text-zinc-500 font-medium mb-1">Last 14 Days</span>
+              <div className="flex items-end gap-[3px] h-10 flex-1">
+                {perfData.daily.map((d) => {
+                  const max = Math.max(...perfData.daily.map(x => x.tasks), 1)
+                  const h = Math.max(2, (d.tasks / max) * 40)
+                  return (
+                    <div
+                      key={d.date}
+                      className="flex-1 rounded-sm transition-all duration-300"
+                      style={{ height: `${h}px`, backgroundColor: d.failures > 0 ? '#ef444480' : d.tasks > 0 ? '#3b82f680' : '#27272a' }}
+                      title={`${d.date}: ${d.tasks} tasks, ${d.prs} PRs, $${d.costUsd.toFixed(2)}`}
+                    />
+                  )
+                })}
+              </div>
+              <div className="flex justify-between mt-1">
+                <span className="text-[10px] text-zinc-600">{perfData.daily[0]?.date.slice(5)}</span>
+                <span className="text-[10px] text-zinc-600">{perfData.daily[perfData.daily.length - 1]?.date.slice(5)}</span>
+              </div>
+            </Card>
+          </div>
+        </div>
       )}
 
       {/* ---- Open Issues + Activity Log (2-col) ---- */}
