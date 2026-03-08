@@ -59,7 +59,7 @@ export function updatePrPollingInterval(intervalMs: number) {
  * Poll our own open PRs for "Changes Requested" reviews.
  * When found, spawn a worker to address the feedback.
  */
-export function pollPrReviews() {
+export async function pollPrReviews() {
   if (existsSync(MAINTENANCE_FILE)) {
     console.log('[pr-poller] Maintenance mode — skipping poll')
     return
@@ -97,7 +97,7 @@ export function pollPrReviews() {
 
     for (const pr of prs) {
       const repo = pr.repository.nameWithOwner
-      if (!isRepoAllowed(repo)) continue
+      if (!(await isRepoAllowed(repo))) continue
 
       const key = `pr:${repo}#${pr.number}`
       let state = getIssueState(key)

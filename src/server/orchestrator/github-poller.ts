@@ -41,7 +41,7 @@ export function updatePollingInterval(intervalMs: number) {
   }
 }
 
-export function pollGitHub() {
+export async function pollGitHub() {
   // Maintenance mode — skip poll
   if (existsSync(MAINTENANCE_FILE)) {
     console.log('[poller] Maintenance mode — skipping poll')
@@ -87,7 +87,7 @@ export function pollGitHub() {
 
     for (const issue of issues) {
       const repo = issue.repository.nameWithOwner
-      if (!isRepoAllowed(repo)) continue
+      if (!(await isRepoAllowed(repo))) continue
 
       const key = `${repo}#${issue.number}`
       const state = getIssueState(key)

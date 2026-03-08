@@ -1,58 +1,52 @@
-import Database from 'better-sqlite3'
-import path from 'path'
-import os from 'os'
-import fs from 'fs'
+import pg from 'pg'
 
-const dbDir = process.env.ULTRADEV_DATA_DIR || path.join(os.homedir(), '.ultradev')
-fs.mkdirSync(dbDir, { recursive: true })
+const pool = new pg.Pool({
+  connectionString: process.env.DATABASE_URL || 'postgresql://ultradev:ultradev@localhost:5432/ultradev',
+})
 
-const dbPath = process.env.ULTRADEV_DB_PATH || path.join(dbDir, 'dashboard.db')
-const db = new Database(dbPath)
+export async function initDb() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS projects (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL,
+      repo_url TEXT DEFAULT '',
+      description TEXT DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'paused', 'archived')),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
 
-db.pragma('journal_mode = WAL')
-db.pragma('foreign_keys = ON')
+    CREATE TABLE IF NOT EXISTS tasks (
+      id SERIAL PRIMARY KEY,
+      title TEXT NOT NULL,
+      description TEXT DEFAULT '',
+      column_id TEXT NOT NULL DEFAULT 'backlog' CHECK(column_id IN ('backlog', 'assigned', 'working', 'pr', 'merged')),
+      position DOUBLE PRECISION NOT NULL DEFAULT 0,
+      github_url TEXT DEFAULT '',
+      project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS projects (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    repo_url TEXT DEFAULT '',
-    description TEXT DEFAULT '',
-    status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'paused', 'archived')),
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
+    CREATE TABLE IF NOT EXISTS cronjobs (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL,
+      schedule TEXT NOT NULL DEFAULT '* * * * *',
+      description TEXT DEFAULT '',
+      command TEXT DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'paused')),
+      last_run TIMESTAMPTZ,
+      next_run TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
 
-  CREATE TABLE IF NOT EXISTS tasks (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    title TEXT NOT NULL,
-    description TEXT DEFAULT '',
-    column_id TEXT NOT NULL DEFAULT 'backlog' CHECK(column_id IN ('backlog', 'assigned', 'working', 'pr', 'merged')),
-    position REAL NOT NULL DEFAULT 0,
-    github_url TEXT DEFAULT '',
-    project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
+    CREATE TABLE IF NOT EXISTS project_cronjobs (
+      project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      cronjob_id INTEGER NOT NULL REFERENCES cronjobs(id) ON DELETE CASCADE,
+      PRIMARY KEY (project_id, cronjob_id)
+    );
+  `)
+}
 
-  CREATE TABLE IF NOT EXISTS cronjobs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    schedule TEXT NOT NULL DEFAULT '* * * * *',
-    description TEXT DEFAULT '',
-    command TEXT DEFAULT '',
-    status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'paused')),
-    last_run TEXT,
-    next_run TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-
-  CREATE TABLE IF NOT EXISTS project_cronjobs (
-    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    cronjob_id INTEGER NOT NULL REFERENCES cronjobs(id) ON DELETE CASCADE,
-    PRIMARY KEY (project_id, cronjob_id)
-  );
-`)
-
-export default db
+export default pool

@@ -7,12 +7,14 @@ import { getMemoryState, getAllIssues, setIssueState } from './state.js'
 import { parseLogStats } from './log-parser.js'
 import { getRateLimitState, setOnResume } from './rate-limit.js'
 import { existsSync } from 'fs'
-import { execFileSync } from 'child_process'
+import { execFile } from 'child_process'
+import { promisify } from 'util'
 import { join } from 'path'
 import { logActivity, getActivityLog } from './activity-log.js'
-
 import { MAINTENANCE_FILE } from '../paths.js'
 import { getAllowedRepos } from './allowed-repos.js'
+
+const execFileAsync = promisify(execFile)
 const startedAt = Date.now()
 
 // --- CI Checks cache (30s TTL) ---
@@ -39,7 +41,7 @@ interface PrLookupEntry {
 const prLookupCache = new Map<string, PrLookupEntry>()
 const PR_LOOKUP_TTL = 30_000
 
-function lookupPrByBranch(repo: string, branchName: string): string | null {
+async function lookupPrByBranch(repo: string, branchName: string): Promise<string | null> {
   const cacheKey = `${repo}:${branchName}`
   const cached = prLookupCache.get(cacheKey)
   if (cached && Date.now() - cached.fetchedAt < PR_LOOKUP_TTL) {
@@ -47,11 +49,11 @@ function lookupPrByBranch(repo: string, branchName: string): string | null {
   }
 
   try {
-    const raw = execFileSync('gh', [
+    const { stdout } = await execFileAsync('gh', [
       'pr', 'list', '--repo', repo, '--head', branchName,
       '--json', 'number,url', '--limit', '1',
     ], { timeout: 10_000, encoding: 'utf-8' })
-    const prs = JSON.parse(raw)
+    const prs = JSON.parse(stdout)
     const prUrl = prs.length > 0 ? prs[0].url : null
     prLookupCache.set(cacheKey, { prUrl, fetchedAt: Date.now() })
     return prUrl
@@ -61,7 +63,7 @@ function lookupPrByBranch(repo: string, branchName: string): string | null {
   }
 }
 
-function fetchCiChecks(repo: string, prNumber: number): CiCheck[] {
+async function fetchCiChecks(repo: string, prNumber: number): Promise<CiCheck[]> {
   const cacheKey = `${repo}#${prNumber}`
   const cached = ciCache.get(cacheKey)
   if (cached && Date.now() - cached.fetchedAt < CI_CACHE_TTL) {
@@ -69,13 +71,13 @@ function fetchCiChecks(repo: string, prNumber: number): CiCheck[] {
   }
 
   try {
-    const raw = execFileSync('gh', [
+    const { stdout } = await execFileAsync('gh', [
       'pr', 'view', String(prNumber),
       '--repo', repo,
       '--json', 'statusCheckRollup',
     ], { timeout: 10_000, encoding: 'utf-8' })
 
-    const data = JSON.parse(raw)
+    const data = JSON.parse(stdout)
     const rollup = data.statusCheckRollup || []
     const checks: CiCheck[] = rollup.map((c: any) => ({
       name: c.name || c.context || 'unknown',
@@ -93,12 +95,12 @@ function fetchCiChecks(repo: string, prNumber: number): CiCheck[] {
 }
 
 /** Reset any in_progress jobs to failed — but only if no Claude worker is actually running */
-function recoverStaleJobs() {
+async function recoverStaleJobs() {
   // Check if a claude worker is still alive from before the restart
   let workerRunning = false
   try {
-    const out = execFileSync('pgrep', ['-a', 'claude'], { encoding: 'utf-8', timeout: 5000 })
-    workerRunning = out.includes('--print')
+    const { stdout } = await execFileAsync('pgrep', ['-a', 'claude'], { encoding: 'utf-8', timeout: 5000 })
+    workerRunning = stdout.includes('--print')
   } catch { /* no claude processes */ }
 
   if (workerRunning) {
@@ -137,7 +139,7 @@ export async function startOrchestrator() {
   console.log(`[ultradev] Repo dir: ${config.paths.repos}`)
   console.log(`[ultradev] Discord: ${config.discord.enabled ? 'enabled' : 'disabled'}`)
 
-  recoverStaleJobs()
+  await recoverStaleJobs()
 
   if (config.discord.enabled && config.discord.token) {
     await startDiscordBot()
@@ -156,13 +158,16 @@ export async function startOrchestrator() {
 
   logActivity('system', 'Orchestrator started')
   console.log('[ultradev] Orchestrator running.')
+
+  // Warm the orchestrator state cache so the first SSE frame is instant
+  getOrchestratorState().catch(() => {})
 }
 
 // --- Cached orchestrator state (avoid recomputing on every request/SSE tick) ---
-let orchestratorCache: { data: ReturnType<typeof computeOrchestratorState>; ts: number } | null = null
+let orchestratorCache: { data: Awaited<ReturnType<typeof computeOrchestratorState>>; ts: number } | null = null
 const ORCHESTRATOR_CACHE_TTL = 5_000 // 5 seconds
 
-function computeOrchestratorState() {
+async function computeOrchestratorState() {
   const config = loadConfig()
   const ghPoller = getPollerState()
   const prPoller = getPrPollerState()
@@ -170,7 +175,7 @@ function computeOrchestratorState() {
   const discordStatus = getDiscordBotStatus()
   const issues = getAllIssues()
 
-  const allowed = getAllowedRepos()
+  const allowed = await getAllowedRepos()
 
   return {
     uptime: Math.floor((Date.now() - startedAt) / 1000),
@@ -212,59 +217,63 @@ function computeOrchestratorState() {
       status: discordStatus,
     },
     errorWatcher: getErrorWatcherState(),
-    workQueue: Object.entries(issues).sort((a, b) => (b[1].updatedAt || 0) - (a[1].updatedAt || 0)).map(([key, state]) => {
-      const logStats = state.logFile ? parseLogStats(state.logFile) : null
-      const resolvedPrUrl = state.prUrl
-        || logStats?.detectedPrUrl
-        || (state.type === 'pr' && state.repo && state.number ? `https://github.com/${state.repo}/pull/${state.number}` : null)
-        || (state.repo ? lookupPrByBranch(state.repo, `ultradev/${key.replace(/[^a-zA-Z0-9_-]/g, '_')}`) : null)
+    workQueue: await Promise.all(
+      Object.entries(issues).sort((a, b) => (b[1].updatedAt || 0) - (a[1].updatedAt || 0)).map(async ([key, state]) => {
+        const logStats = state.logFile ? parseLogStats(state.logFile) : null
+        const resolvedPrUrl = state.prUrl
+          || logStats?.detectedPrUrl
+          || (state.type === 'pr' && state.repo && state.number ? `https://github.com/${state.repo}/pull/${state.number}` : null)
+          || (state.repo ? await lookupPrByBranch(state.repo, `ultradev/${key.replace(/[^a-zA-Z0-9_-]/g, '_')}`) : null)
 
-      return {
-        key,
-        repo: state.repo || key.split('#')[0],
-        number: state.number,
-        type: state.type || (key.startsWith('pr:') ? 'pr' : 'issue'),
-        status: state.status,
-        attempts: state.attempts || 0,
-        prUrl: resolvedPrUrl,
-        error: state.error || null,
-        logFile: state.logFile || null,
-        updatedAt: state.updatedAt || null,
-        toolCalls: logStats?.toolCalls ?? 0,
-        costUsd: logStats?.costUsd ?? null,
-        durationMs: logStats?.durationMs ?? null,
-        inputTokens: logStats?.inputTokens ?? 0,
-        outputTokens: logStats?.outputTokens ?? 0,
-        cacheCreationTokens: logStats?.cacheCreationTokens ?? 0,
-        cacheReadTokens: logStats?.cacheReadTokens ?? 0,
-        totalTokens: logStats?.totalTokens ?? 0,
-        peakContext: logStats?.peakContext ?? 0,
-        contextHistory: logStats?.contextHistory ?? [],
-        recentTools: logStats?.recentTools ?? [],
-        lastThinking: logStats?.lastThinking ?? null,
-        currentTool: logStats?.currentTool ?? null,
-        lastActivityMs: logStats?.lastActivityMs ?? null,
-        detectedPrUrl: logStats?.detectedPrUrl ?? null,
-        todoList: logStats?.todoList ?? [],
-        thoughts: logStats?.thoughts ?? [],
-        agentCount: logStats?.agentCount ?? 0,
-        ciChecks: (() => {
+        const ciChecks = await (async () => {
           if (!resolvedPrUrl || typeof resolvedPrUrl !== 'string') return []
           const match = resolvedPrUrl.match(/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/pull\/(\d+)/)
           if (!match) return []
           return fetchCiChecks(match[1], parseInt(match[2]))
-        })(),
-      }
-    }),
+        })()
+
+        return {
+          key,
+          repo: state.repo || key.split('#')[0],
+          number: state.number,
+          type: state.type || (key.startsWith('pr:') ? 'pr' : 'issue'),
+          status: state.status,
+          attempts: state.attempts || 0,
+          prUrl: resolvedPrUrl,
+          error: state.error || null,
+          logFile: state.logFile || null,
+          updatedAt: state.updatedAt || null,
+          toolCalls: logStats?.toolCalls ?? 0,
+          costUsd: logStats?.costUsd ?? null,
+          durationMs: logStats?.durationMs ?? null,
+          inputTokens: logStats?.inputTokens ?? 0,
+          outputTokens: logStats?.outputTokens ?? 0,
+          cacheCreationTokens: logStats?.cacheCreationTokens ?? 0,
+          cacheReadTokens: logStats?.cacheReadTokens ?? 0,
+          totalTokens: logStats?.totalTokens ?? 0,
+          peakContext: logStats?.peakContext ?? 0,
+          contextHistory: logStats?.contextHistory ?? [],
+          recentTools: logStats?.recentTools ?? [],
+          lastThinking: logStats?.lastThinking ?? null,
+          currentTool: logStats?.currentTool ?? null,
+          lastActivityMs: logStats?.lastActivityMs ?? null,
+          detectedPrUrl: logStats?.detectedPrUrl ?? null,
+          todoList: logStats?.todoList ?? [],
+          thoughts: logStats?.thoughts ?? [],
+          agentCount: logStats?.agentCount ?? 0,
+          ciChecks,
+        }
+      })
+    ),
   }
 }
 
-export function getOrchestratorState() {
+export async function getOrchestratorState() {
   const now = Date.now()
   if (orchestratorCache && now - orchestratorCache.ts < ORCHESTRATOR_CACHE_TTL) {
     return orchestratorCache.data
   }
-  const data = computeOrchestratorState()
+  const data = await computeOrchestratorState()
   orchestratorCache = { data, ts: now }
   return data
 }
