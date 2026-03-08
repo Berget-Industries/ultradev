@@ -52,6 +52,8 @@ import {
 import { LogViewer } from '@/components/LogViewer'
 import { toolIcon } from '@/components/LogContent'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { DashboardSkeleton, StatRingSkeleton, PerfStatSkeleton, IssueTableSkeleton } from '@/components/skeletons/DashboardSkeleton'
+import { Skeleton } from '@/components/ui/skeleton'
 import { api } from '@/lib/api'
 import { useStore } from '@/lib/store'
 
@@ -477,14 +479,7 @@ export default function DashboardPage() {
   }, [orchestrator, historyPage])
 
   if (!orchestrator) {
-    return (
-      <div className="flex items-center justify-center h-64 text-muted-foreground">
-        <div className="flex items-center gap-2">
-          <div className="h-2 w-2 rounded-full bg-blue-400 animate-pulse" />
-          Connecting...
-        </div>
-      </div>
-    )
+    return <DashboardSkeleton />
   }
 
   const byLatest = (a: WorkItem, b: WorkItem) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0)
@@ -523,7 +518,14 @@ export default function DashboardPage() {
             </div>
           </>
         ) : (
-          <span className="text-xs text-zinc-600">Loading...</span>
+          <>
+            <StatRingSkeleton />
+            <StatRingSkeleton />
+            <div>
+              <Skeleton className="h-2.5 w-8 mb-1" />
+              <Skeleton className="h-5 w-10" />
+            </div>
+          </>
         )}
 
         {/* Divider */}
@@ -590,7 +592,27 @@ export default function DashboardPage() {
       )}
 
       {/* ---- Performance Stats ---- */}
-      {perfData && (
+      {!perfData ? (
+        <div>
+          <div className="flex items-center gap-1.5 mb-2">
+            <BarChart3 className="h-4 w-4 text-zinc-400" />
+            <span className="text-sm font-medium text-zinc-300">Performance</span>
+          </div>
+          <div className="grid grid-cols-5 lg:grid-cols-9 gap-2">
+            {Array.from({ length: 7 }).map((_, i) => (
+              <PerfStatSkeleton key={i} />
+            ))}
+            <Card className="p-3 col-span-2 flex flex-col justify-between">
+              <Skeleton className="h-3 w-20 mb-1" />
+              <div className="flex items-end gap-[3px] h-10 flex-1">
+                {[24, 12, 32, 18, 28, 8, 36, 20, 14, 30, 10, 26, 16, 22].map((h, i) => (
+                  <Skeleton key={i} className="flex-1 rounded-sm" style={{ height: `${h}px` }} />
+                ))}
+              </div>
+            </Card>
+          </div>
+        </div>
+      ) : (
         <div>
           <div className="flex items-center gap-1.5 mb-2">
             <BarChart3 className="h-4 w-4 text-zinc-400" />
@@ -641,7 +663,9 @@ export default function DashboardPage() {
           </Badge>
         </div>
 
-        {openIssues.length === 0 ? (
+        {!openIssuesData ? (
+          <IssueTableSkeleton />
+        ) : openIssues.length === 0 ? (
           <Card className="p-4">
             <div className="flex items-center justify-center gap-2 text-zinc-600 text-sm">
               <Inbox className="h-4 w-4" />

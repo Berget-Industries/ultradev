@@ -18,6 +18,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import { UsageSkeleton } from '@/components/skeletons/UsageSkeleton'
 import { api } from '@/lib/api'
 import { useStore } from '@/lib/store'
 
@@ -248,14 +249,7 @@ export default function UsagePage() {
   const { data, loading } = useStore<UsageData>('/usage', () => api.get('/usage'), { ttl: 60_000, pollInterval: 60_000 })
 
   if (!data) {
-    return (
-      <div className="flex items-center justify-center h-64 text-muted-foreground">
-        <div className="flex items-center gap-2">
-          <div className="h-2 w-2 rounded-full bg-blue-400 animate-pulse" />
-          Loading usage data...
-        </div>
-      </div>
-    )
+    return <UsageSkeleton />
   }
 
   return (
