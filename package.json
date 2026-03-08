@@ -7,6 +7,7 @@
     "dev": "tsx src/server/index.ts",
     "build": "vite build",
     "preview": "vite preview",
+    "update": "git fetch --tags && git checkout $(git describe --tags --abbrev=0 $(git rev-list --tags --max-count=1)) && pnpm install",
     "changeset": "changeset",
     "version-packages": "changeset version",
     "release": "changeset publish"

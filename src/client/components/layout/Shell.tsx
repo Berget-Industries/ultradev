@@ -1,8 +1,10 @@
 import { useState, useCallback, useEffect } from 'react'
 import { NavLink } from 'react-router-dom'
-import { Zap, LayoutDashboard, FolderGit2, Clock, BarChart3, Maximize, Minimize } from 'lucide-react'
+import { Zap, LayoutDashboard, FolderGit2, Clock, BarChart3, Maximize, Minimize, ArrowUpCircle } from 'lucide-react'
 import { AgentIndicator } from '@/components/agents/AgentIndicator'
 import { MaintenanceToggle } from '@/components/layout/MaintenanceToggle'
+import { useStore } from '@/lib/store'
+import { api } from '@/lib/api'
 import { cn } from '@/lib/utils'
 
 const navItems = [
@@ -12,8 +14,16 @@ const navItems = [
   { to: '/usage', label: 'Usage', icon: BarChart3 },
 ]
 
+interface VersionInfo {
+  current: string
+  latest: string | null
+  updateAvailable: boolean
+}
+
 export function Shell({ children }: { children: React.ReactNode }) {
   const [isFullscreen, setIsFullscreen] = useState(!!document.fullscreenElement)
+  const { data: version } = useStore<VersionInfo>('/version', () => api.get('/version'), { ttl: 10 * 60_000 })
+  const [dismissed, setDismissed] = useState(false)
 
   const toggleFullscreen = useCallback(() => {
     if (document.fullscreenElement) {
@@ -72,6 +82,18 @@ export function Shell({ children }: { children: React.ReactNode }) {
           </button>
         </div>
       </header>
+      {version?.updateAvailable && !dismissed && (
+        <div className="flex items-center justify-between px-4 py-1.5 bg-blue-500/10 border-b border-blue-500/20 text-xs">
+          <div className="flex items-center gap-2 text-blue-400">
+            <ArrowUpCircle className="h-3.5 w-3.5" />
+            <span>
+              Update available: {version.current} &rarr; <strong>{version.latest}</strong>
+              &nbsp;&mdash; run <code className="bg-blue-500/20 px-1 py-0.5 rounded">pnpm update</code> to upgrade
+            </span>
+          </div>
+          <button onClick={() => setDismissed(true)} className="text-blue-500 hover:text-blue-300 px-1">&times;</button>
+        </div>
+      )}
       <main className="flex-1 overflow-auto p-4">{children}</main>
     </div>
   )
