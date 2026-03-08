@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from 'react'
 import { NavLink } from 'react-router-dom'
-import { Zap, LayoutDashboard, FolderGit2, Clock, BarChart3, Maximize, Minimize, ArrowUpCircle } from 'lucide-react'
+import { Zap, LayoutDashboard, FolderGit2, Clock, BarChart3, Maximize, Minimize, ArrowUpCircle, Loader2 } from 'lucide-react'
 import { AgentIndicator } from '@/components/agents/AgentIndicator'
 import { MaintenanceToggle } from '@/components/layout/MaintenanceToggle'
 import { useStore } from '@/lib/store'
@@ -23,13 +23,30 @@ interface VersionInfo {
 export function Shell({ children }: { children: React.ReactNode }) {
   const [isFullscreen, setIsFullscreen] = useState(!!document.fullscreenElement)
   const { data: version } = useStore<VersionInfo>('/version', () => api.get('/version'), { ttl: 10 * 60_000 })
-  const [dismissed, setDismissed] = useState(false)
+  const [updating, setUpdating] = useState(false)
 
   const toggleFullscreen = useCallback(() => {
     if (document.fullscreenElement) {
       document.exitFullscreen()
     } else {
       document.documentElement.requestFullscreen()
+    }
+  }, [])
+
+  const handleUpdate = useCallback(async () => {
+    setUpdating(true)
+    try {
+      await api.post('/version/update', {})
+      // Server will restart — poll until it comes back
+      const poll = setInterval(async () => {
+        try {
+          await api.get('/version')
+          clearInterval(poll)
+          window.location.reload()
+        } catch { /* still restarting */ }
+      }, 2000)
+    } catch {
+      setUpdating(false)
     }
   }, [])
 
@@ -47,6 +64,9 @@ export function Shell({ children }: { children: React.ReactNode }) {
           <div className="flex items-center gap-2">
             <Zap className="h-4 w-4 text-yellow-500" />
             <span className="font-bold text-sm">UltraDev</span>
+            {version && (
+              <span className="text-[10px] text-zinc-600 font-mono">{version.current}</span>
+            )}
           </div>
           <nav className="flex items-center gap-1">
             {navItems.map(({ to, label, icon: Icon }) => (
@@ -69,6 +89,26 @@ export function Shell({ children }: { children: React.ReactNode }) {
           </nav>
         </div>
         <div className="flex items-center gap-4">
+          {version?.updateAvailable && (
+            <button
+              onClick={handleUpdate}
+              disabled={updating}
+              className={cn(
+                'flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium transition-colors',
+                updating
+                  ? 'bg-blue-500/20 text-blue-400 cursor-wait'
+                  : 'bg-blue-500/15 text-blue-400 hover:bg-blue-500/25 hover:text-blue-300'
+              )}
+            >
+              {updating ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <ArrowUpCircle className="h-3 w-3" />
+              )}
+              {updating ? 'Updating...' : `Update to ${version.latest}`}
+            </button>
+          )}
+          {version?.updateAvailable && <div className="w-px h-5 bg-zinc-800" />}
           <MaintenanceToggle />
           <div className="w-px h-5 bg-zinc-800" />
           <AgentIndicator />
@@ -82,18 +122,6 @@ export function Shell({ children }: { children: React.ReactNode }) {
           </button>
         </div>
       </header>
-      {version?.updateAvailable && !dismissed && (
-        <div className="flex items-center justify-between px-4 py-1.5 bg-blue-500/10 border-b border-blue-500/20 text-xs">
-          <div className="flex items-center gap-2 text-blue-400">
-            <ArrowUpCircle className="h-3.5 w-3.5" />
-            <span>
-              Update available: {version.current} &rarr; <strong>{version.latest}</strong>
-              &nbsp;&mdash; run <code className="bg-blue-500/20 px-1 py-0.5 rounded">pnpm update</code> to upgrade
-            </span>
-          </div>
-          <button onClick={() => setDismissed(true)} className="text-blue-500 hover:text-blue-300 px-1">&times;</button>
-        </div>
-      )}
       <main className="flex-1 overflow-auto p-4">{children}</main>
     </div>
   )

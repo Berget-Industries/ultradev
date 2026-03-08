@@ -43,4 +43,44 @@ router.get('/', async (_req, res) => {
   })
 })
 
+router.post('/update', async (_req, res) => {
+  try {
+    // Fetch latest tags
+    await execFileAsync('git', ['fetch', '--tags'], { timeout: 30_000, encoding: 'utf-8' })
+
+    // Get latest tag
+    const { stdout: revOut } = await execFileAsync('git', [
+      'rev-list', '--tags', '--max-count=1',
+    ], { timeout: 10_000, encoding: 'utf-8' })
+
+    const { stdout: tagOut } = await execFileAsync('git', [
+      'describe', '--tags', '--abbrev=0', revOut.trim(),
+    ], { timeout: 10_000, encoding: 'utf-8' })
+
+    const latestTag = tagOut.trim()
+    if (!latestTag) {
+      res.status(404).json({ error: 'No release tags found' })
+      return
+    }
+
+    // Checkout latest tag
+    await execFileAsync('git', ['checkout', latestTag], { timeout: 10_000, encoding: 'utf-8' })
+
+    // Install dependencies
+    await execFileAsync('pnpm', ['install', '--frozen-lockfile'], {
+      timeout: 120_000,
+      encoding: 'utf-8',
+      env: { ...process.env },
+    })
+
+    res.json({ success: true, version: latestTag })
+
+    // Exit after response is sent — systemd (Restart=always) will restart with new code
+    setTimeout(() => process.exit(0), 500)
+  } catch (err: any) {
+    console.error('[version] Update failed:', err)
+    res.status(500).json({ error: err.message || 'Update failed' })
+  }
+})
+
 export default router
