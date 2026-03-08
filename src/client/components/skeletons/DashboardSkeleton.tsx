@@ -9,7 +9,9 @@ import {
   TableRow,
 } from '@/components/ui/table'
 
-function StatRingSkeleton() {
+const SPARKLINE_HEIGHTS = [24, 12, 32, 18, 28, 8, 36, 20, 14, 30, 10, 26, 16, 22]
+
+export function StatRingSkeleton() {
   return (
     <div className="flex items-center gap-2">
       <Skeleton className="h-10 w-10 rounded-full" />
@@ -21,7 +23,7 @@ function StatRingSkeleton() {
   )
 }
 
-function PerfStatSkeleton() {
+export function PerfStatSkeleton() {
   return (
     <Card className="p-3 flex flex-col gap-1">
       <div className="flex items-center gap-1.5">
@@ -44,7 +46,7 @@ function PerfStatSkeleton() {
   )
 }
 
-function IssueTableSkeleton() {
+export function IssueTableSkeleton() {
   return (
     <Card className="p-0 overflow-hidden">
       <div className="h-[200px]">
@@ -210,7 +212,7 @@ export function DashboardSkeleton() {
             <Skeleton className="h-3 w-20 mb-1" />
             <div className="flex items-end gap-[3px] h-10 flex-1">
               {Array.from({ length: 14 }).map((_, i) => (
-                <Skeleton key={i} className="flex-1 rounded-sm" style={{ height: `${8 + Math.random() * 32}px` }} />
+                <Skeleton key={i} className="flex-1 rounded-sm" style={{ height: `${SPARKLINE_HEIGHTS[i]}px` }} />
               ))}
             </div>
             <div className="flex justify-between mt-1">

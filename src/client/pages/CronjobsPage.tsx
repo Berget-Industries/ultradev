@@ -73,7 +73,7 @@ export default function CronjobsPage() {
     refreshOrch()
   }
 
-  const initialLoading = cronjobs === null && orchState === null
+  if (cronjobs === null && orchState === null) return <CronjobsSkeleton />
 
   // Merge into one list: system pollers first, then custom cronjobs
   const rows: CronRow[] = [
@@ -134,8 +134,6 @@ export default function CronjobsPage() {
     setEditingPoller(null)
     load()
   }
-
-  if (initialLoading) return <CronjobsSkeleton />
 
   return (
     <div className="space-y-6">

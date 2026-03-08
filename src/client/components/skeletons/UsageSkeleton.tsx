@@ -9,6 +9,9 @@ import {
   TableRow,
 } from '@/components/ui/table'
 
+const COST_BAR_HEIGHTS = [35, 58, 22, 70, 45, 15, 62, 40, 28, 55, 18, 48, 32, 65]
+const TOKEN_BAR_HEIGHTS = [50, 30, 68, 25, 55, 42, 12, 60, 38, 20, 52, 35, 45, 72]
+
 function StatCardSkeleton() {
   return (
     <Card className="p-4">
@@ -34,7 +37,7 @@ function DailyBarChartSkeleton() {
           {Array.from({ length: 14 }).map((_, i) => (
             <div key={i} className="flex-1 flex flex-col items-center gap-1">
               <div className="w-full flex flex-col items-center justify-end h-20">
-                <Skeleton className="w-full rounded-t" style={{ height: `${5 + Math.random() * 75}%` }} />
+                <Skeleton className="w-full rounded-t" style={{ height: `${COST_BAR_HEIGHTS[i]}%` }} />
               </div>
               <Skeleton className="h-2 w-6" />
             </div>
@@ -50,7 +53,7 @@ function DailyBarChartSkeleton() {
           {Array.from({ length: 14 }).map((_, i) => (
             <div key={i} className="flex-1 flex flex-col items-center gap-1">
               <div className="w-full flex flex-col items-center justify-end h-20">
-                <Skeleton className="w-full rounded-t" style={{ height: `${5 + Math.random() * 75}%` }} />
+                <Skeleton className="w-full rounded-t" style={{ height: `${TOKEN_BAR_HEIGHTS[i]}%` }} />
               </div>
               <Skeleton className="h-2 w-6" />
             </div>
