@@ -39,7 +39,7 @@ jobs:
           commit: "chore: version packages"
           version: pnpm changeset version
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
 
       - name: Create GitHub Release
         if: steps.changesets.outputs.hasChangesets == 'false' && steps.changesets.outputs.published == 'false'
@@ -65,4 +65,4 @@ jobs:
             --notes "${NOTES:-Release ${TAG}}" \
             --target main
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
