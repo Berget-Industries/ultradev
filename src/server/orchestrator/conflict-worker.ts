@@ -5,9 +5,15 @@ import type { Config } from './config.js'
 import type { WorkerResult } from './worker.js'
 import { handleRateLimitEvent } from './rate-limit.js'
 
+interface ConflictPr {
+  number: number
+  title: string
+  url: string
+}
+
 export async function spawnConflictWorker(
   repo: string,
-  pr: any,
+  pr: ConflictPr,
   headRefName: string,
   baseRefName: string,
   config: Config,
@@ -129,7 +135,7 @@ function getDefaultBranch(repoDir: string): string {
 
 function buildConflictPrompt(
   repo: string,
-  pr: any,
+  pr: ConflictPr,
   headRefName: string,
   baseRefName: string,
 ): string {

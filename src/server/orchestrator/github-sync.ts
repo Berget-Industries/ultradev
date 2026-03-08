@@ -16,7 +16,7 @@ import { notify } from './notifier.js'
 import { isRepoAllowed } from './allowed-repos.js'
 import { scoreIssue, formatScore } from './prioritize.js'
 import { handleIssue } from './github-poller.js'
-import { handlePrReview, cleanStalePrStates, getLatestReviewTimestamp } from './pr-poller.js'
+import { handlePrReview, cleanStalePrStates } from './pr-poller.js'
 import { handleConflict } from './conflict-poller.js'
 import db from '../db.js'
 
@@ -102,7 +102,7 @@ async function syncIssues(username: string) {
 
     await db.query(`
       INSERT INTO github_issues (repo, number, title, state, labels, assignee, created_at, updated_at, synced_at)
-      VALUES ($1, $2, $3, 'open', $4, $5, $6, $7, NOW())
+      VALUES ($1, $2, $3, 'OPEN', $4, $5, $6, $7, NOW())
       ON CONFLICT (repo, number) DO UPDATE SET
         title = EXCLUDED.title,
         state = EXCLUDED.state,
@@ -113,16 +113,16 @@ async function syncIssues(username: string) {
   }
 
   // Mark issues that are no longer open as closed (stale cleanup)
-  const openKeys = issues.map(i => `${i.repository?.nameWithOwner}#${i.number}`)
-  if (openKeys.length > 0) {
+  // Skip if we hit the limit — can't be sure missing issues are actually closed
+  if (issues.length < 50) {
     const repos = [...new Set(issues.map(i => i.repository?.nameWithOwner).filter(Boolean))]
     for (const repo of repos) {
       const repoIssueNums = issues
         .filter(i => i.repository?.nameWithOwner === repo)
         .map(i => i.number)
       await db.query(`
-        UPDATE github_issues SET state = 'closed', synced_at = NOW()
-        WHERE repo = $1 AND assignee = $2 AND state = 'open' AND number != ALL($3)
+        UPDATE github_issues SET state = 'CLOSED', synced_at = NOW()
+        WHERE repo = $1 AND assignee = $2 AND state = 'OPEN' AND number != ALL($3)
       `, [repo, username, repoIssueNums])
     }
   }
@@ -147,7 +147,7 @@ async function syncPrs(username: string, repos: string[]) {
       '--repo', repo,
       '--author', username,
       '--state', prState,
-      '--json', 'number,title,url,state,headRefName,baseRefName,body,mergeable,reviewDecision,statusCheckRollup,createdAt,updatedAt',
+      '--json', 'number,title,url,state,headRefName,baseRefName,body,mergeable,reviewDecision,statusCheckRollup,reviews,createdAt,updatedAt',
       '--limit', '50'
     )
     if (!raw) continue
@@ -185,9 +185,18 @@ async function syncPrs(username: string, repos: string[]) {
         }
       }
 
+      // Extract latest CHANGES_REQUESTED review timestamp
+      const changesRequestedReviews = (pr.reviews || [])
+        .filter((r: any) => r.state === 'CHANGES_REQUESTED' && r.submittedAt)
+        .map((r: any) => r.submittedAt)
+        .sort()
+      const latestReviewAt = changesRequestedReviews.length > 0
+        ? changesRequestedReviews[changesRequestedReviews.length - 1]
+        : null
+
       await db.query(`
-        INSERT INTO github_prs (repo, number, title, body, state, head_ref, base_ref, author, mergeable, review_decision, ci_status, status_check_rollup, linked_issue_numbers, created_at, updated_at, synced_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW())
+        INSERT INTO github_prs (repo, number, title, body, state, head_ref, base_ref, author, mergeable, review_decision, ci_status, status_check_rollup, linked_issue_numbers, latest_review_at, created_at, updated_at, synced_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, NOW())
         ON CONFLICT (repo, number) DO UPDATE SET
           title = EXCLUDED.title,
           body = EXCLUDED.body,
@@ -199,6 +208,7 @@ async function syncPrs(username: string, repos: string[]) {
           ci_status = EXCLUDED.ci_status,
           status_check_rollup = EXCLUDED.status_check_rollup,
           linked_issue_numbers = EXCLUDED.linked_issue_numbers,
+          latest_review_at = EXCLUDED.latest_review_at,
           updated_at = EXCLUDED.updated_at,
           synced_at = NOW()
       `, [
@@ -206,7 +216,7 @@ async function syncPrs(username: string, repos: string[]) {
         pr.headRefName, pr.baseRefName, username,
         pr.mergeable || 'UNKNOWN', pr.reviewDecision || '',
         ciStatus, JSON.stringify(pr.statusCheckRollup || []),
-        Array.from(linkedIssues),
+        Array.from(linkedIssues), latestReviewAt,
         pr.createdAt, pr.updatedAt,
       ])
 
@@ -244,7 +254,7 @@ export async function syncGitHub() {
 
     // 2. Get unique repos from issues we just synced
     const { rows: repoRows } = await db.query(
-      "SELECT DISTINCT repo FROM github_issues WHERE assignee = $1 AND state = 'open'",
+      "SELECT DISTINCT repo FROM github_issues WHERE assignee = $1 AND state = 'OPEN'",
       [username]
     )
     const repos = repoRows.map((r: any) => r.repo)
@@ -308,9 +318,9 @@ async function dispatch() {
       const key = `pr:${pr.repo}#${pr.number}`
       let state = getIssueState(key)
 
-      // If marked done, check for new review feedback
+      // If marked done, check for new review feedback (from DB, no API call)
       if (state?.status === 'done') {
-        const latestReviewAt = getLatestReviewTimestamp(pr.repo, pr.number)
+        const latestReviewAt = pr.latest_review_at
         if (!latestReviewAt || (state.lastReviewAt && latestReviewAt <= state.lastReviewAt)) {
           continue
         }
@@ -337,10 +347,10 @@ async function dispatch() {
       const attempt = (state?.attempts || 0) + 1
       const isRetry = attempt > 1
       const prSummary = {
-        repository: { nameWithOwner: pr.repo },
         number: pr.number,
         title: pr.title,
         url: `https://github.com/${pr.repo}/pull/${pr.number}`,
+        latest_review_at: pr.latest_review_at,
       }
 
       console.log(`[dispatch] Picked: ${key} (reason: changes_requested, priority: highest)`)
@@ -505,7 +515,7 @@ export async function hasPendingWork(): Promise<boolean> {
     const key = `pr:${pr.repo}#${pr.number}`
     const state = getIssueState(key)
     if (state?.status === 'done') {
-      const latestReviewAt = getLatestReviewTimestamp(pr.repo, pr.number)
+      const latestReviewAt = pr.latest_review_at
       if (latestReviewAt && (!state.lastReviewAt || latestReviewAt > state.lastReviewAt)) return true
       continue
     }
@@ -564,12 +574,13 @@ export interface DbPr {
   ci_status: string
   status_check_rollup: any[]
   linked_issue_numbers: number[]
+  latest_review_at: string | null
 }
 
 /** Get open issues assigned to username */
 export async function getOpenIssues(username: string): Promise<DbIssue[]> {
   const { rows } = await db.query(
-    "SELECT repo, number, title, labels, state, created_at FROM github_issues WHERE assignee = $1 AND state = 'open' ORDER BY number",
+    "SELECT repo, number, title, labels, state, created_at FROM github_issues WHERE assignee = $1 AND state = 'OPEN' ORDER BY number",
     [username]
   )
   return rows
@@ -579,7 +590,7 @@ export async function getOpenIssues(username: string): Promise<DbIssue[]> {
 export async function getPrsByRepos(username: string, repos: string[]): Promise<DbPr[]> {
   if (repos.length === 0) return []
   const { rows } = await db.query(
-    'SELECT repo, number, title, state, head_ref, base_ref, mergeable, review_decision, ci_status, status_check_rollup, linked_issue_numbers FROM github_prs WHERE author = $1 AND repo = ANY($2) ORDER BY number',
+    'SELECT repo, number, title, state, head_ref, base_ref, mergeable, review_decision, ci_status, status_check_rollup, linked_issue_numbers, latest_review_at FROM github_prs WHERE author = $1 AND repo = ANY($2) ORDER BY number',
     [username, repos]
   )
   return rows
@@ -588,7 +599,7 @@ export async function getPrsByRepos(username: string, repos: string[]): Promise<
 /** Get open PRs with merge conflicts */
 export async function getConflictingPrs(username: string): Promise<DbPr[]> {
   const { rows } = await db.query(
-    "SELECT repo, number, title, state, head_ref, base_ref, mergeable, review_decision, ci_status, status_check_rollup, linked_issue_numbers FROM github_prs WHERE author = $1 AND state = 'OPEN' AND mergeable = 'CONFLICTING'",
+    "SELECT repo, number, title, state, head_ref, base_ref, mergeable, review_decision, ci_status, status_check_rollup, linked_issue_numbers, latest_review_at FROM github_prs WHERE author = $1 AND state = 'OPEN' AND mergeable = 'CONFLICTING'",
     [username]
   )
   return rows
@@ -597,7 +608,7 @@ export async function getConflictingPrs(username: string): Promise<DbPr[]> {
 /** Get open PRs with CI failures linked to a specific issue */
 export async function getFailingPrsForIssue(username: string, repo: string, issueNumber: number): Promise<DbPr[]> {
   const { rows } = await db.query(
-    "SELECT repo, number, title, state, head_ref, base_ref, mergeable, review_decision, ci_status, status_check_rollup, linked_issue_numbers FROM github_prs WHERE author = $1 AND repo = $2 AND state = 'OPEN' AND ci_status = 'failing' AND $3 = ANY(linked_issue_numbers)",
+    "SELECT repo, number, title, state, head_ref, base_ref, mergeable, review_decision, ci_status, status_check_rollup, linked_issue_numbers, latest_review_at FROM github_prs WHERE author = $1 AND repo = $2 AND state = 'OPEN' AND ci_status = 'failing' AND $3 = ANY(linked_issue_numbers)",
     [username, repo, issueNumber]
   )
   return rows
@@ -606,7 +617,7 @@ export async function getFailingPrsForIssue(username: string, repo: string, issu
 /** Get open PRs with changes_requested reviews */
 export async function getPrsWithChangesRequested(username: string): Promise<DbPr[]> {
   const { rows } = await db.query(
-    "SELECT repo, number, title, state, head_ref, base_ref, mergeable, review_decision, ci_status, status_check_rollup, linked_issue_numbers FROM github_prs WHERE author = $1 AND state = 'OPEN' AND review_decision = 'CHANGES_REQUESTED'",
+    "SELECT repo, number, title, state, head_ref, base_ref, mergeable, review_decision, ci_status, status_check_rollup, linked_issue_numbers, latest_review_at FROM github_prs WHERE author = $1 AND state = 'OPEN' AND review_decision = 'CHANGES_REQUESTED'",
     [username]
   )
   return rows

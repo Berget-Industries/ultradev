@@ -1,54 +1,18 @@
 import { execFileSync } from 'child_process'
-import { existsSync } from 'fs'
-import { loadConfig } from './config.js'
-import { MAINTENANCE_FILE } from '../paths.js'
 import { getIssueState, setIssueState, getAllIssues } from './state.js'
 import { spawnPrWorker } from './pr-worker.js'
 import { makeLogPath } from './worker.js'
 import { notify } from './notifier.js'
-import { isRateLimited } from './rate-limit.js'
-import { isWorkerSlotFree, claimWorkerSlot, releaseWorkerSlot } from './worker-lock.js'
+import { releaseWorkerSlot } from './worker-lock.js'
 import { logActivity } from './activity-log.js'
-import { isRepoAllowed } from './allowed-repos.js'
+import { loadConfig } from './config.js'
 import { getPrsWithChangesRequested } from './github-sync.js'
+import type { Config } from './config.js'
+import type { IssueState } from './state.js'
 
 const MAX_ATTEMPTS = 3
-let lastPollTime: number | null = null
-let pollStatus: 'idle' | 'polling' | 'error' = 'idle'
-let intervalId: ReturnType<typeof setInterval> | null = null
-let enabled = false
 
-export function getPrPollerState() {
-  return { lastPollTime, pollStatus, enabled }
-}
-
-/**
- * Check if there are any pending PR reviews that actually still need work.
- * Cross-references state.json with the DB to avoid stale deadlocks:
- * a pr: item in state.json only counts if the DB still shows CHANGES_REQUESTED.
- */
-let _cachedPendingCheck: { result: boolean; ts: number } | null = null
-const PENDING_CHECK_TTL = 30_000
-
-export function hasPendingPrReviews(): boolean {
-  // Use cached result to avoid hitting DB on every poll cycle
-  if (_cachedPendingCheck && Date.now() - _cachedPendingCheck.ts < PENDING_CHECK_TTL) {
-    return _cachedPendingCheck.result
-  }
-
-  const issues = getAllIssues()
-  let hasPending = false
-  for (const [key, state] of Object.entries(issues)) {
-    if (!key.startsWith('pr:')) continue
-    if (state.status === 'in_progress') { hasPending = true; break }
-    if (state.status === 'pending') { hasPending = true; break }
-  }
-
-  _cachedPendingCheck = { result: hasPending, ts: Date.now() }
-  return hasPending
-}
-
-/** Async version that cross-checks with DB — called by pr-poller to clean stale state */
+/** Cross-checks state.json with DB — clears stale pr: entries that no longer have CHANGES_REQUESTED */
 export async function cleanStalePrStates(): Promise<void> {
   const issues = getAllIssues()
   let dbPrs: any[] | null = null
@@ -78,137 +42,20 @@ export async function cleanStalePrStates(): Promise<void> {
   }
 }
 
-export function stopPrPolling() {
-  if (intervalId !== null) {
-    clearInterval(intervalId)
-    intervalId = null
-  }
-  enabled = false
-  console.log('[pr-poller] Polling stopped')
+
+
+
+interface PrSummary {
+  number: number
+  title: string
+  url: string
+  latest_review_at?: string | null
 }
 
-export function updatePrPollingInterval(intervalMs: number) {
-  if (intervalId !== null) {
-    clearInterval(intervalId)
-    intervalId = null
-  }
-  if (enabled) {
-    intervalId = setInterval(pollPrReviews, intervalMs)
-    console.log(`[pr-poller] Interval updated to ${intervalMs / 1000}s`)
-  }
-}
-
-/**
- * Poll our own open PRs for "Changes Requested" reviews.
- * When found, spawn a worker to address the feedback.
- */
-export async function pollPrReviews() {
-  if (existsSync(MAINTENANCE_FILE)) {
-    console.log('[pr-poller] Maintenance mode — skipping poll')
-    return
-  }
-  if (isRateLimited()) {
-    console.log('[pr-poller] Rate limited, skipping poll')
-    return
-  }
-  if (!isWorkerSlotFree()) {
-    console.log('[pr-poller] Worker active (global lock), skipping poll')
-    return
-  }
-
-  const config = loadConfig()
-  const username = config.github.username
-  pollStatus = 'polling'
-
-  try {
-    // Clean stale pr: state entries that no longer match DB
-    await cleanStalePrStates()
-
-    // Read from DB (populated by github-sync) — no GitHub API call
-    const dbPrs = await getPrsWithChangesRequested(username)
-
-    lastPollTime = Date.now()
-    pollStatus = 'idle'
-
-    const prs = dbPrs.map(p => ({
-      repository: { nameWithOwner: p.repo },
-      number: p.number,
-      title: p.title,
-      url: `https://github.com/${p.repo}/pull/${p.number}`,
-    }))
-    logActivity('pr-poller', `Checked DB — ${prs.length} with changes requested`)
-    if (prs.length === 0) return
-
-    for (const pr of prs) {
-      const repo = pr.repository.nameWithOwner
-      if (!(await isRepoAllowed(repo))) continue
-
-      const key = `pr:${repo}#${pr.number}`
-      let state = getIssueState(key)
-
-      // If marked done but GitHub still shows changes_requested,
-      // check if there's a genuinely NEW review we haven't addressed yet
-      if (state?.status === 'done') {
-        const latestReviewAt = getLatestReviewTimestamp(repo, pr.number)
-        if (!latestReviewAt || (state.lastReviewAt && latestReviewAt <= state.lastReviewAt)) {
-          // No new review since we last addressed it — skip
-          continue
-        }
-        console.log(`[pr-poller] ${key} has new review feedback (${latestReviewAt}) — resetting for another round`)
-        setIssueState(key, { status: 'pending', attempts: 0, notifiedMaxRetries: false })
-        state = getIssueState(key)
-      }
-      if (state?.status === 'in_progress') {
-        if (Date.now() - (state.updatedAt || 0) > 20 * 60 * 1000) {
-          setIssueState(key, { status: 'failed', error: 'Timed out (stuck)' })
-        }
-        continue
-      }
-      if ((state?.attempts || 0) >= MAX_ATTEMPTS) {
-        if (!state?.notifiedMaxRetries) {
-          notify(`⚠️ **${key}** — Gave up after ${MAX_ATTEMPTS} attempts on PR review. Needs human help.`)
-          setIssueState(key, { notifiedMaxRetries: true })
-        }
-        continue
-      }
-
-      // Check if we can claim the slot
-      if (!isWorkerSlotFree() || !claimWorkerSlot()) {
-        console.log('[pr-poller] Worker slot taken, will try next cycle')
-        break
-      }
-
-      handlePrReview(repo, pr, config, state)
-      break // single task mode
-    }
-  } catch (err: any) {
-    console.error('[pr-poller] Error polling PR reviews:', err.message)
-    logActivity('pr-poller', `Error: ${err.message}`)
-    pollStatus = 'error'
-    lastPollTime = Date.now()
-  }
-}
-
-/** Get the ISO timestamp of the most recent CHANGES_REQUESTED review on a PR */
-export function getLatestReviewTimestamp(repo: string, prNum: number): string | null {
-  try {
-    const raw = execFileSync('gh', [
-      'pr', 'view', String(prNum), '--repo', repo,
-      '--json', 'reviews',
-      '--jq', '[.reviews[] | select(.state=="CHANGES_REQUESTED") | .submittedAt] | sort | last',
-    ], { encoding: 'utf-8', timeout: 15000 })
-    const ts = raw.trim()
-    return ts || null
-  } catch {
-    return null
-  }
-}
-
-export async function handlePrReview(repo: string, prSummary: any, config: any, state: any) {
+export async function handlePrReview(repo: string, prSummary: PrSummary, config: Config, state: IssueState | null) {
   const prNum = prSummary.number
   const key = `pr:${repo}#${prNum}`
-  // Capture the latest review timestamp so we can record what we addressed
-  const reviewTimestamp = getLatestReviewTimestamp(repo, prNum)
+  const reviewTimestamp = prSummary.latest_review_at || null
 
   try {
     // Get full PR details
@@ -282,16 +129,3 @@ export async function handlePrReview(repo: string, prSummary: any, config: any, 
   }
 }
 
-export function startPrPolling() {
-  const config = loadConfig()
-  const interval = config.github.pollIntervalMs
-
-  if (intervalId !== null) {
-    clearInterval(intervalId)
-  }
-
-  enabled = true
-  console.log(`[pr-poller] Polling PR reviews every ${interval / 1000}s`)
-  pollPrReviews()
-  intervalId = setInterval(pollPrReviews, interval)
-}

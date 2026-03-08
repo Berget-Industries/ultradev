@@ -39,15 +39,22 @@ export interface ScoreBreakdown {
 }
 
 export interface ScoredIssue {
-  issue: any
+  issue: ScorableIssue
   score: ScoreBreakdown
 }
 
 // ---------------------------------------------------------------------------
 // Score a single issue
 // ---------------------------------------------------------------------------
-export function scoreIssue(issue: any, state: IssueState | null): ScoreBreakdown {
-  const labels: string[] = (issue.labels || []).map((l: any) =>
+interface ScorableIssue {
+  labels?: (string | { name?: string })[]
+  createdAt?: string
+  created_at?: string
+  comments?: { totalCount?: number } | number
+}
+
+export function scoreIssue(issue: ScorableIssue, state: IssueState | null): ScoreBreakdown {
+  const labels: string[] = (issue.labels || []).map((l) =>
     typeof l === 'string' ? l : l.name || ''
   )
 
@@ -63,7 +70,7 @@ export function scoreIssue(issue: any, state: IssueState | null): ScoreBreakdown
 
   // --- Freshness: recently created issues get a boost ---
   let freshness = 0
-  const createdAt = issue.createdAt ? new Date(issue.createdAt).getTime() : 0
+  const createdAt = (issue.createdAt || issue.created_at) ? new Date((issue.createdAt || issue.created_at)!).getTime() : 0
   if (createdAt > 0) {
     const ageMs = Date.now() - createdAt
     if (ageMs < FRESHNESS_WINDOW_MS) {
@@ -93,7 +100,8 @@ export function scoreIssue(issue: any, state: IssueState | null): ScoreBreakdown
 
   // --- Comment count: more discussion = more urgency ---
   let comments = 0
-  const commentCount = issue.comments?.totalCount ?? issue.comments ?? 0
+  const rawComments = issue.comments
+  const commentCount = (typeof rawComments === 'object' && rawComments !== null ? rawComments.totalCount : rawComments) ?? 0
   if (typeof commentCount === 'number' && commentCount > 0) {
     // 1 comment = 3pts, 2 = 5pts, 5+ = 10pts (log curve)
     comments = Math.min(MAX_COMMENT_SCORE, Math.round(MAX_COMMENT_SCORE * Math.log2(commentCount + 1) / Math.log2(6)))
@@ -107,7 +115,7 @@ export function scoreIssue(issue: any, state: IssueState | null): ScoreBreakdown
 // ---------------------------------------------------------------------------
 // Sort a list of issues by priority score (highest first)
 // ---------------------------------------------------------------------------
-export function prioritizeIssues(issues: any[]): ScoredIssue[] {
+export function prioritizeIssues(issues: (ScorableIssue & { repository?: { nameWithOwner: string }; number: number })[]): ScoredIssue[] {
   const scored: ScoredIssue[] = issues.map(issue => {
     const repo = issue.repository?.nameWithOwner || ''
     const key = `${repo}#${issue.number}`
