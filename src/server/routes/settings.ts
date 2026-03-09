@@ -92,10 +92,18 @@ router.get('/system-info', async (_req, res) => {
     try {
       let files = 0
       let bytes = 0
-      for (const entry of readdirSync(dir)) {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
         try {
-          const st = statSync(join(dir, entry))
-          if (st.isFile()) { files++; bytes += st.size }
+          const filePath = join(dir, entry.name)
+          if (entry.isDirectory()) {
+            const child = dirSize(filePath)
+            files += child.files
+            bytes += child.bytes
+          } else if (entry.isFile()) {
+            const st = statSync(filePath)
+            files++
+            bytes += st.size
+          }
         } catch { /* skip */ }
       }
       return { files, bytes }
@@ -191,7 +199,8 @@ router.post('/import', async (req, res) => {
     })
 
     invalidateAllCaches()
-    await refreshConfig()
+    const config = await refreshConfig()
+    updateGitHubSyncInterval(config.github.pollIntervalMs)
 
     res.json({ ok: true, imported: { settings: settingsCount, promptTemplates: templatesCount } })
   } catch {
@@ -202,11 +211,14 @@ router.post('/import', async (req, res) => {
 // POST /api/settings/reset — reset all settings to defaults
 router.post('/reset', async (_req, res) => {
   try {
-    await prisma.setting.deleteMany()
-    await prisma.setting.createMany({ data: defaultSettings })
+    await prisma.$transaction(async (tx) => {
+      await tx.setting.deleteMany()
+      await tx.setting.createMany({ data: defaultSettings })
+    })
 
     invalidateAllCaches()
-    await refreshConfig()
+    const config = await refreshConfig()
+    updateGitHubSyncInterval(config.github.pollIntervalMs)
 
     res.json({ ok: true, reset: defaultSettings.length })
   } catch {
@@ -217,6 +229,7 @@ router.post('/reset', async (_req, res) => {
 // POST /api/settings/clear-caches — clear all server-side caches
 router.post('/clear-caches', async (_req, res) => {
   invalidateAllCaches()
+  await refreshConfig()
   res.json({ ok: true })
 })
 
@@ -326,8 +339,9 @@ router.post('/restart-service', async (req, res) => {
     }
     case 'all': {
       invalidateAllCaches()
-      await refreshConfig()
-      res.json({ ok: true, message: 'All caches cleared and config refreshed' })
+      const config = await refreshConfig()
+      updateGitHubSyncInterval(config.github.pollIntervalMs)
+      res.json({ ok: true, message: 'Caches cleared and config reloaded' })
       break
     }
     default:

@@ -120,8 +120,8 @@ function SystemInfoSection({ info }: { info: SystemInfo }) {
     }
   }
 
-  const StatusDot = ({ ok }: { ok: boolean }) => (
-    <span className={`inline-block h-2 w-2 rounded-full ${ok ? 'bg-green-500' : 'bg-red-500'}`} />
+  const StatusDot = ({ ok }: { ok: boolean | null }) => (
+    <span className={`inline-block h-2 w-2 rounded-full ${ok === null ? 'bg-zinc-500' : ok ? 'bg-green-500' : 'bg-red-500'}`} />
   )
 
   return (
@@ -174,7 +174,7 @@ function SystemInfoSection({ info }: { info: SystemInfo }) {
             {(['database', 'redis', 'github', 'discord'] as const).map(service => {
               const autoStatus = service === 'database' ? info.database : service === 'redis' ? info.redis : null
               const testResult = testResults[service]
-              const isOk = testResult ? testResult.ok : autoStatus === 'connected'
+              const isOk = testResult ? testResult.ok : autoStatus ? autoStatus === 'connected' : null
               const label = service.charAt(0).toUpperCase() + service.slice(1)
 
               return (
