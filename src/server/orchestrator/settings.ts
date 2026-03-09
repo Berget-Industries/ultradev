@@ -1,8 +1,7 @@
 import { prisma } from '../prisma.js'
-import type { Config, TriggerRule } from './config.js'
+import type { Config } from './config.js'
 import { join } from 'path'
-
-const HOME = process.env.HOME || '/home/' + (process.env.USER || 'user')
+import { HOME, splitCsv, parseTriggerWhitelist, safeParseInt, expandTilde } from '../lib/config-helpers.js'
 
 let cache: { config: Config; ts: number } | null = null
 const CACHE_TTL = 10_000
@@ -29,6 +28,9 @@ export async function loadSettingsConfig(): Promise<Config> {
     github: {
       username: get('github.username', process.env.ULTRADEV_GITHUB_USERNAME, 'ultradev'),
       pollIntervalMs: safeParseInt(get('github.poll_interval_ms', process.env.ULTRADEV_POLL_INTERVAL_MS, '120000'), 120000),
+      autoAssign: get('github.auto_assign', process.env.ULTRADEV_GITHUB_AUTO_ASSIGN, 'false') === 'true',
+      defaultLabels: splitCsv(get('github.default_labels', process.env.ULTRADEV_GITHUB_DEFAULT_LABELS, '')),
+      reposWhitelist: splitCsv(get('github.repos_whitelist', process.env.ULTRADEV_GITHUB_REPOS_WHITELIST, '')),
     },
     discord: {
       enabled: get('discord.enabled', process.env.ULTRADEV_DISCORD_ENABLED, 'true') !== 'false',
@@ -43,32 +45,41 @@ export async function loadSettingsConfig(): Promise<Config> {
       enabled: get('error_watcher.enabled', process.env.ULTRADEV_ERROR_WATCHER_ENABLED, 'true') !== 'false',
       intervalMs: safeParseInt(get('error_watcher.interval_ms', process.env.ULTRADEV_ERROR_WATCHER_INTERVAL_MS, String(12 * 60 * 60 * 1000)), 12 * 60 * 60 * 1000),
       targetRepo: get('error_watcher.target_repo', process.env.ULTRADEV_ERROR_WATCHER_REPO, '') || null,
-      labels: get('error_watcher.labels', process.env.ULTRADEV_ERROR_WATCHER_LABELS, 'production,bug,auto-triaged')
-        .split(',').map(l => l.trim()).filter(Boolean),
+      labels: splitCsv(get('error_watcher.labels', process.env.ULTRADEV_ERROR_WATCHER_LABELS, 'production,bug,auto-triaged')),
+    },
+    worker: {
+      maxConcurrent: safeParseInt(get('worker.max_concurrent', process.env.ULTRADEV_WORKER_MAX_CONCURRENT, '1'), 1),
+      defaultTimeoutMs: safeParseInt(get('worker.default_timeout_ms', process.env.ULTRADEV_WORKER_DEFAULT_TIMEOUT_MS, '1800000'), 1800000),
+    },
+    notifications: {
+      enabled: get('notifications.enabled', process.env.ULTRADEV_NOTIFICATIONS_ENABLED, 'true') !== 'false',
+      discordOnSuccess: get('notifications.discord_on_success', process.env.ULTRADEV_NOTIFICATIONS_DISCORD_ON_SUCCESS, 'true') !== 'false',
+      discordOnFailure: get('notifications.discord_on_failure', process.env.ULTRADEV_NOTIFICATIONS_DISCORD_ON_FAILURE, 'true') !== 'false',
     },
     paths: {
-      repos: get('paths.repos', process.env.ULTRADEV_REPOS_DIR, join(HOME, 'ultradev', 'repos')),
-      logs: get('paths.logs', process.env.ULTRADEV_LOGS_DIR, join(HOME, 'ultradev', 'logs')),
+      repos: expandTilde(get('paths.repos', process.env.ULTRADEV_REPOS_DIR, join(HOME, 'ultradev', 'repos'))),
+      logs: expandTilde(get('paths.logs', process.env.ULTRADEV_LOGS_DIR, join(HOME, 'ultradev', 'logs'))),
     },
     claude: {
       command: get('claude.command', process.env.ULTRADEV_CLAUDE_COMMAND, 'claude'),
       flags,
     },
+    log: {
+      level: get('log.level', process.env.ULTRADEV_LOG_LEVEL, 'info'),
+      retentionDays: safeParseInt(get('log.retention_days', process.env.ULTRADEV_LOG_RETENTION_DAYS, '30'), 30),
+    },
+    ui: {
+      theme: get('ui.theme', process.env.ULTRADEV_UI_THEME, 'dark'),
+      pageSize: safeParseInt(get('ui.page_size', process.env.ULTRADEV_UI_PAGE_SIZE, '25'), 25),
+    },
+    features: {
+      autoPrReview: get('features.auto_pr_review', process.env.ULTRADEV_FEATURES_AUTO_PR_REVIEW, 'true') !== 'false',
+      selfHeal: get('features.self_heal', process.env.ULTRADEV_FEATURES_SELF_HEAL, 'true') !== 'false',
+      cronScheduler: get('features.cron_scheduler', process.env.ULTRADEV_FEATURES_CRON_SCHEDULER, 'true') !== 'false',
+      autoMerge: get('features.auto_merge', process.env.ULTRADEV_FEATURES_AUTO_MERGE, 'false') === 'true',
+    },
   }
 
   cache = { config, ts: Date.now() }
   return config
-}
-
-function safeParseInt(val: string, fallback: number): number {
-  const parsed = parseInt(val, 10)
-  return Number.isNaN(parsed) ? fallback : parsed
-}
-
-function parseTriggerWhitelist(raw: string): TriggerRule[] {
-  if (!raw.trim()) return []
-  return raw.split(',').map(entry => {
-    const [channelId, authorId] = entry.trim().split(':')
-    return { channelId, authorId }
-  }).filter(r => r.channelId && r.authorId)
 }

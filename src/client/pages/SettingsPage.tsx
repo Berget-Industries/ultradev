@@ -1,5 +1,9 @@
-import { useState, useMemo } from 'react'
-import { Settings, FileText, Save, Eye, EyeOff, ChevronDown, ChevronRight, Check, AlertCircle } from 'lucide-react'
+import { useState, useEffect, useMemo, useRef } from 'react'
+import {
+  Settings, FileText, Save, Eye, EyeOff, ChevronDown, ChevronRight,
+  Check, AlertCircle, Server, Download, Upload, RotateCcw, Trash2,
+  Zap, Database, RefreshCw,
+} from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
@@ -33,6 +37,20 @@ interface PromptTemplate {
   updated_at: string
 }
 
+interface SystemInfo {
+  version: string
+  nodeVersion: string
+  uptime: number
+  pid: number
+  database: string
+  redis: string
+  memory: { rss: number; heapUsed: number; heapTotal: number }
+  disk: {
+    logs: { files: number; bytes: number }
+    repos: { files: number; bytes: number }
+  }
+}
+
 type SettingsMap = Record<string, SettingEntry[]>
 
 // --- Toast feedback component ---
@@ -50,6 +68,141 @@ function Toast({ message, type, onDismiss }: { message: string; type: 'success' 
       {message}
       <button onClick={onDismiss} className="ml-2 opacity-60 hover:opacity-100">&times;</button>
     </div>
+  )
+}
+
+// --- Helpers ---
+
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB']
+  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
+  return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`
+}
+
+function formatUptime(seconds: number): string {
+  const d = Math.floor(seconds / 86400)
+  const h = Math.floor((seconds % 86400) / 3600)
+  const m = Math.floor((seconds % 3600) / 60)
+  if (d > 0) return `${d}d ${h}h ${m}m`
+  if (h > 0) return `${h}h ${m}m`
+  return `${m}m`
+}
+
+// --- useToast hook ---
+
+function useToast() {
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null)
+
+  const show = (message: string, type: 'success' | 'error', duration = 3000) => {
+    setToast({ message, type })
+    setTimeout(() => setToast(null), duration)
+  }
+
+  return { toast, show, dismiss: () => setToast(null) }
+}
+
+// --- System Info Section ---
+
+function SystemInfoSection({ info }: { info: SystemInfo }) {
+  const [testing, setTesting] = useState<string | null>(null)
+  const [testResults, setTestResults] = useState<Record<string, { ok: boolean; message: string }>>({})
+
+  const testConnection = async (service: string) => {
+    setTesting(service)
+    try {
+      const result = await api.post<{ ok: boolean; message: string }>('/settings/test-connection', { service })
+      setTestResults(prev => ({ ...prev, [service]: result }))
+    } catch (err) {
+      setTestResults(prev => ({ ...prev, [service]: { ok: false, message: err instanceof Error ? err.message : 'Test failed' } }))
+    } finally {
+      setTesting(null)
+    }
+  }
+
+  const StatusDot = ({ ok }: { ok: boolean | null }) => (
+    <span className={`inline-block h-2 w-2 rounded-full ${ok === null ? 'bg-zinc-500' : ok ? 'bg-green-500' : 'bg-red-500'}`} />
+  )
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <Server className="h-4 w-4 text-zinc-500" />
+          System Info
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="grid grid-cols-2 gap-x-8 gap-y-3 text-sm md:grid-cols-4">
+          <div>
+            <div className="text-xs text-muted-foreground">Version</div>
+            <div className="font-mono">{info.version}</div>
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground">Node.js</div>
+            <div className="font-mono">{info.nodeVersion}</div>
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground">Uptime</div>
+            <div className="font-mono">{formatUptime(info.uptime)}</div>
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground">PID</div>
+            <div className="font-mono">{info.pid}</div>
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground">Memory (heap)</div>
+            <div className="font-mono">{formatBytes(info.memory.heapUsed)} / {formatBytes(info.memory.heapTotal)}</div>
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground">Memory (RSS)</div>
+            <div className="font-mono">{formatBytes(info.memory.rss)}</div>
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground">Log Files</div>
+            <div className="font-mono">{info.disk.logs.files} files ({formatBytes(info.disk.logs.bytes)})</div>
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground">Repos</div>
+            <div className="font-mono">{info.disk.repos.files} files ({formatBytes(info.disk.repos.bytes)})</div>
+          </div>
+        </div>
+
+        <div className="mt-4 border-t border-zinc-800 pt-4">
+          <div className="text-xs text-muted-foreground mb-2">Connections</div>
+          <div className="flex flex-wrap gap-3">
+            {(['database', 'redis', 'github', 'discord'] as const).map(service => {
+              const autoStatus = service === 'database' ? info.database : service === 'redis' ? info.redis : null
+              const testResult = testResults[service]
+              const isOk = testResult ? testResult.ok : autoStatus ? autoStatus === 'connected' : null
+              const label = service.charAt(0).toUpperCase() + service.slice(1)
+
+              return (
+                <button
+                  key={service}
+                  onClick={() => testConnection(service)}
+                  disabled={testing === service}
+                  className="flex items-center gap-2 rounded-lg border border-zinc-800 px-3 py-2 text-xs hover:bg-zinc-800/50 transition-colors disabled:opacity-50"
+                >
+                  <StatusDot ok={isOk} />
+                  {label}
+                  {testing === service ? (
+                    <RefreshCw className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <Zap className="h-3 w-3 text-zinc-500" />
+                  )}
+                </button>
+              )
+            })}
+          </div>
+          {Object.entries(testResults).map(([service, result]) => (
+            <div key={service} className={`mt-1 text-xs ${result.ok ? 'text-green-400' : 'text-red-400'}`}>
+              {service}: {result.message}
+            </div>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
   )
 }
 
@@ -76,6 +229,17 @@ function ConfigurationSection({
   const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(new Set())
   const [saving, setSaving] = useState(false)
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null)
+
+  // Re-sync form values when settings refresh (e.g. after save)
+  useEffect(() => {
+    const updated: Record<string, string> = {}
+    for (const entries of Object.values(settings)) {
+      for (const entry of entries) {
+        updated[entry.key] = entry.type === 'secret' ? '' : entry.value
+      }
+    }
+    setValues(updated)
+  }, [settings])
 
   const categories = Object.keys(settings)
 
@@ -454,6 +618,255 @@ function PromptTemplatesSection({
   )
 }
 
+// --- Import/Export Section ---
+
+function ImportExportSection({ onImported }: { onImported: () => void }) {
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const { toast, show, dismiss } = useToast()
+  const [exporting, setExporting] = useState(false)
+  const [importing, setImporting] = useState(false)
+
+  const handleExport = async () => {
+    setExporting(true)
+    try {
+      const data = await api.get<any>('/settings/export')
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `ultradev-settings-${new Date().toISOString().slice(0, 10)}.json`
+      a.click()
+      URL.revokeObjectURL(url)
+      show('Settings exported', 'success')
+    } catch (err) {
+      show(err instanceof Error ? err.message : 'Export failed', 'error', 5000)
+    } finally {
+      setExporting(false)
+    }
+  }
+
+  const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setImporting(true)
+    try {
+      const text = await file.text()
+      const data = JSON.parse(text)
+      const result = await api.post<{ ok: boolean; imported: { settings: number; promptTemplates: number } }>('/settings/import', data)
+      show(`Imported ${result.imported.settings} settings, ${result.imported.promptTemplates} templates`, 'success')
+      onImported()
+    } catch (err) {
+      show(err instanceof Error ? err.message : 'Import failed', 'error', 5000)
+    } finally {
+      setImporting(false)
+      if (fileInputRef.current) fileInputRef.current.value = ''
+    }
+  }
+
+  return (
+    <>
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-sm">
+            <Database className="h-4 w-4 text-zinc-500" />
+            Import / Export
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-xs text-muted-foreground mb-3">
+            Export your settings and prompt templates as JSON for backup, or import a previously exported configuration.
+            Secrets are excluded from exports.
+          </p>
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" onClick={handleExport} disabled={exporting}>
+              <Download className="h-4 w-4" />
+              {exporting ? 'Exporting...' : 'Export'}
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => fileInputRef.current?.click()} disabled={importing}>
+              <Upload className="h-4 w-4" />
+              {importing ? 'Importing...' : 'Import'}
+            </Button>
+            <input ref={fileInputRef} type="file" accept=".json" className="hidden" onChange={handleImport} />
+          </div>
+        </CardContent>
+      </Card>
+      {toast && <Toast message={toast.message} type={toast.type} onDismiss={dismiss} />}
+    </>
+  )
+}
+
+// --- Danger Zone Section ---
+
+function DangerZoneSection({ onReset }: { onReset: () => void }) {
+  const [confirmReset, setConfirmReset] = useState(false)
+  const [purgeDays, setPurgeDays] = useState('30')
+  const { toast, show, dismiss } = useToast()
+  const [busy, setBusy] = useState<string | null>(null)
+
+  const handleReset = async () => {
+    setBusy('reset')
+    try {
+      await api.post('/settings/reset', {})
+      show('All settings reset to defaults', 'success')
+      setConfirmReset(false)
+      onReset()
+    } catch (err) {
+      show(err instanceof Error ? err.message : 'Reset failed', 'error', 5000)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const handleClearCaches = async () => {
+    setBusy('caches')
+    try {
+      await api.post('/settings/clear-caches', {})
+      show('All caches cleared', 'success')
+    } catch (err) {
+      show(err instanceof Error ? err.message : 'Failed to clear caches', 'error', 5000)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const handlePurgeLogs = async () => {
+    const days = parseInt(purgeDays, 10)
+    if (Number.isNaN(days) || days < 0) {
+      show('Enter a valid number of days', 'error')
+      return
+    }
+    setBusy('purge')
+    try {
+      const result = await api.post<{ ok: boolean; deleted: number }>('/settings/purge-logs', { olderThanDays: days })
+      show(`Deleted ${result.deleted} log file(s)`, 'success')
+    } catch (err) {
+      show(err instanceof Error ? err.message : 'Purge failed', 'error', 5000)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const handleRestartService = async (service: string) => {
+    setBusy(`restart-${service}`)
+    try {
+      const result = await api.post<{ ok: boolean; message: string }>('/settings/restart-service', { service })
+      show(result.message, 'success')
+    } catch (err) {
+      show(err instanceof Error ? err.message : 'Restart failed', 'error', 5000)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  return (
+    <>
+      <Card className="border-red-500/20">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-sm text-red-400">
+            <AlertCircle className="h-4 w-4" />
+            Danger Zone
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {/* Restart Services */}
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <div className="text-sm font-medium">Restart Services</div>
+              <div className="text-xs text-muted-foreground">Refresh config and restart background services</div>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => handleRestartService('all')}
+              disabled={busy === 'restart-all'}
+            >
+              <RefreshCw className={`h-4 w-4 ${busy === 'restart-all' ? 'animate-spin' : ''}`} />
+              {busy === 'restart-all' ? 'Restarting...' : 'Restart All'}
+            </Button>
+          </div>
+
+          {/* Clear Caches */}
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <div className="text-sm font-medium">Clear Caches</div>
+              <div className="text-xs text-muted-foreground">Clear all server-side caches (Redis + in-memory)</div>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleClearCaches}
+              disabled={busy === 'caches'}
+            >
+              <Trash2 className="h-4 w-4" />
+              {busy === 'caches' ? 'Clearing...' : 'Clear'}
+            </Button>
+          </div>
+
+          {/* Purge Logs */}
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <div className="text-sm font-medium">Purge Old Logs</div>
+              <div className="text-xs text-muted-foreground">Delete log files older than specified days</div>
+            </div>
+            <div className="flex items-center gap-2">
+              <Input
+                type="number"
+                min="0"
+                value={purgeDays}
+                onChange={(e) => setPurgeDays(e.target.value)}
+                className="w-20"
+              />
+              <span className="text-xs text-muted-foreground">days</span>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handlePurgeLogs}
+                disabled={busy === 'purge'}
+              >
+                <Trash2 className="h-4 w-4" />
+                {busy === 'purge' ? 'Purging...' : 'Purge'}
+              </Button>
+            </div>
+          </div>
+
+          {/* Reset to Defaults */}
+          <div className="flex items-center justify-between gap-4 border-t border-red-500/20 pt-4">
+            <div>
+              <div className="text-sm font-medium text-red-400">Reset All Settings</div>
+              <div className="text-xs text-muted-foreground">Delete all settings and restore factory defaults. This cannot be undone.</div>
+            </div>
+            {!confirmReset ? (
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={() => setConfirmReset(true)}
+              >
+                <RotateCcw className="h-4 w-4" />
+                Reset
+              </Button>
+            ) : (
+              <div className="flex items-center gap-2">
+                <Button variant="ghost" size="sm" onClick={() => setConfirmReset(false)}>
+                  Cancel
+                </Button>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={handleReset}
+                  disabled={busy === 'reset'}
+                >
+                  {busy === 'reset' ? 'Resetting...' : 'Confirm Reset'}
+                </Button>
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+      {toast && <Toast message={toast.message} type={toast.type} onDismiss={dismiss} />}
+    </>
+  )
+}
+
 // --- Main Page ---
 
 export default function SettingsPage() {
@@ -465,8 +878,19 @@ export default function SettingsPage() {
     '/prompt-templates',
     () => api.get('/prompt-templates'),
   )
+  const { data: systemInfo, refresh: refreshSystemInfo } = useStore<SystemInfo>(
+    '/settings/system-info',
+    () => api.get('/settings/system-info'),
+    { ttl: 10_000 },
+  )
 
   if (settings === null || templates === null) return <SettingsSkeleton />
+
+  const refreshAll = () => {
+    refreshSettings()
+    refreshTemplates()
+    refreshSystemInfo()
+  }
 
   return (
     <div className="space-y-6">
@@ -475,9 +899,15 @@ export default function SettingsPage() {
         <h1 className="text-2xl font-bold">Settings</h1>
       </div>
 
+      {systemInfo && <SystemInfoSection info={systemInfo} />}
+
       <ConfigurationSection settings={settings} onSaved={refreshSettings} />
 
       <PromptTemplatesSection templates={templates} onSaved={refreshTemplates} />
+
+      <ImportExportSection onImported={refreshAll} />
+
+      <DangerZoneSection onReset={refreshAll} />
     </div>
   )
 }

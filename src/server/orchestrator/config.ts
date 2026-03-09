@@ -1,12 +1,8 @@
 import { join } from 'path'
 import { loadSettingsConfig, invalidateSettingsCache } from './settings.js'
+import { HOME, splitCsv, parseTriggerWhitelist, type TriggerRule } from '../lib/config-helpers.js'
 
-const HOME = process.env.HOME || '/home/' + (process.env.USER || 'user')
-
-export interface TriggerRule {
-  channelId: string
-  authorId: string
-}
+export type { TriggerRule }
 
 export interface ErrorWatcherConfig {
   enabled: boolean
@@ -19,6 +15,9 @@ export interface Config {
   github: {
     username: string
     pollIntervalMs: number
+    autoAssign: boolean
+    defaultLabels: string[]
+    reposWhitelist: string[]
   }
   discord: {
     enabled: boolean
@@ -28,6 +27,15 @@ export interface Config {
     triggerWhitelist: TriggerRule[]
   }
   errorWatcher: ErrorWatcherConfig
+  worker: {
+    maxConcurrent: number
+    defaultTimeoutMs: number
+  }
+  notifications: {
+    enabled: boolean
+    discordOnSuccess: boolean
+    discordOnFailure: boolean
+  }
   paths: {
     repos: string
     logs: string
@@ -35,6 +43,20 @@ export interface Config {
   claude: {
     command: string
     flags: string[]
+  }
+  log: {
+    level: string
+    retentionDays: number
+  }
+  ui: {
+    theme: string
+    pageSize: number
+  }
+  features: {
+    autoPrReview: boolean
+    selfHeal: boolean
+    cronScheduler: boolean
+    autoMerge: boolean
   }
 }
 
@@ -50,6 +72,9 @@ function envFallbackConfig(): Config {
     github: {
       username: process.env.ULTRADEV_GITHUB_USERNAME || 'ultradev',
       pollIntervalMs: parseInt(process.env.ULTRADEV_POLL_INTERVAL_MS || '120000', 10),
+      autoAssign: process.env.ULTRADEV_GITHUB_AUTO_ASSIGN === 'true',
+      defaultLabels: splitCsv(process.env.ULTRADEV_GITHUB_DEFAULT_LABELS || ''),
+      reposWhitelist: splitCsv(process.env.ULTRADEV_GITHUB_REPOS_WHITELIST || ''),
     },
     discord: {
       enabled: process.env.ULTRADEV_DISCORD_ENABLED !== 'false',
@@ -62,7 +87,16 @@ function envFallbackConfig(): Config {
       enabled: process.env.ULTRADEV_ERROR_WATCHER_ENABLED !== 'false',
       intervalMs: parseInt(process.env.ULTRADEV_ERROR_WATCHER_INTERVAL_MS || String(12 * 60 * 60 * 1000), 10),
       targetRepo: process.env.ULTRADEV_ERROR_WATCHER_REPO || null,
-      labels: (process.env.ULTRADEV_ERROR_WATCHER_LABELS || 'production,bug,auto-triaged').split(',').map(l => l.trim()).filter(Boolean),
+      labels: splitCsv(process.env.ULTRADEV_ERROR_WATCHER_LABELS || 'production,bug,auto-triaged'),
+    },
+    worker: {
+      maxConcurrent: parseInt(process.env.ULTRADEV_WORKER_MAX_CONCURRENT || '1', 10),
+      defaultTimeoutMs: parseInt(process.env.ULTRADEV_WORKER_DEFAULT_TIMEOUT_MS || '1800000', 10),
+    },
+    notifications: {
+      enabled: process.env.ULTRADEV_NOTIFICATIONS_ENABLED !== 'false',
+      discordOnSuccess: process.env.ULTRADEV_NOTIFICATIONS_DISCORD_ON_SUCCESS !== 'false',
+      discordOnFailure: process.env.ULTRADEV_NOTIFICATIONS_DISCORD_ON_FAILURE !== 'false',
     },
     paths: {
       repos: process.env.ULTRADEV_REPOS_DIR || join(HOME, 'ultradev', 'repos'),
@@ -71,6 +105,20 @@ function envFallbackConfig(): Config {
     claude: {
       command: process.env.ULTRADEV_CLAUDE_COMMAND || 'claude',
       flags,
+    },
+    log: {
+      level: process.env.ULTRADEV_LOG_LEVEL || 'info',
+      retentionDays: parseInt(process.env.ULTRADEV_LOG_RETENTION_DAYS || '30', 10),
+    },
+    ui: {
+      theme: process.env.ULTRADEV_UI_THEME || 'dark',
+      pageSize: parseInt(process.env.ULTRADEV_UI_PAGE_SIZE || '25', 10),
+    },
+    features: {
+      autoPrReview: process.env.ULTRADEV_FEATURES_AUTO_PR_REVIEW !== 'false',
+      selfHeal: process.env.ULTRADEV_FEATURES_SELF_HEAL !== 'false',
+      cronScheduler: process.env.ULTRADEV_FEATURES_CRON_SCHEDULER !== 'false',
+      autoMerge: process.env.ULTRADEV_FEATURES_AUTO_MERGE === 'true',
     },
   }
 }
@@ -99,10 +147,3 @@ export function invalidateAllCaches() {
   invalidateSettingsCache()
 }
 
-function parseTriggerWhitelist(raw: string): TriggerRule[] {
-  if (!raw.trim()) return []
-  return raw.split(',').map(entry => {
-    const [channelId, authorId] = entry.trim().split(':')
-    return { channelId, authorId }
-  }).filter(r => r.channelId && r.authorId)
-}

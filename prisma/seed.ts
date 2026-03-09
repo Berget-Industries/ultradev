@@ -1,24 +1,9 @@
 import { PrismaClient } from '@prisma/client'
+import { defaultSettings } from '../src/server/lib/defaults.js'
 
 const prisma = new PrismaClient()
 
-const settings = [
-  { key: 'github.username', value: 'ultradev', type: 'string', label: 'GitHub Username', description: 'GitHub user to poll for assigned issues', category: 'github' },
-  { key: 'github.poll_interval_ms', value: '120000', type: 'number', label: 'Poll Interval (ms)', description: 'How often to sync with GitHub', category: 'github' },
-  { key: 'discord.enabled', value: 'true', type: 'boolean', label: 'Enabled', description: 'Enable Discord bot integration', category: 'discord' },
-  { key: 'discord.token', value: '', type: 'secret', label: 'Bot Token', description: 'Discord bot token', category: 'discord' },
-  { key: 'discord.owner_user_id', value: '', type: 'string', label: 'Owner User ID', description: 'Discord user ID of the bot owner', category: 'discord' },
-  { key: 'discord.notify_channel_id', value: '', type: 'string', label: 'Notify Channel ID', description: 'Channel for notifications', category: 'discord' },
-  { key: 'discord.trigger_whitelist', value: '', type: 'string', label: 'Trigger Whitelist', description: 'channelId:authorId pairs (comma-separated)', category: 'discord' },
-  { key: 'error_watcher.enabled', value: 'true', type: 'boolean', label: 'Enabled', description: 'Enable error watcher', category: 'worker' },
-  { key: 'error_watcher.interval_ms', value: '43200000', type: 'number', label: 'Interval (ms)', description: 'How often to scan for errors', category: 'worker' },
-  { key: 'error_watcher.target_repo', value: '', type: 'string', label: 'Target Repo', description: 'Repo to create issues in (owner/repo)', category: 'worker' },
-  { key: 'error_watcher.labels', value: 'production,bug,auto-triaged', type: 'string', label: 'Labels', description: 'Labels for auto-created issues', category: 'worker' },
-  { key: 'paths.repos', value: '~/ultradev/repos', type: 'string', label: 'Repos Directory', description: 'Where to clone repositories', category: 'paths' },
-  { key: 'paths.logs', value: '~/ultradev/logs', type: 'string', label: 'Logs Directory', description: 'Where to store worker logs', category: 'paths' },
-  { key: 'claude.command', value: 'claude', type: 'string', label: 'Claude Command', description: 'Path to the Claude CLI', category: 'claude' },
-  { key: 'claude.flags', value: '--dangerously-skip-permissions', type: 'string', label: 'Claude Flags', description: 'Flags passed to Claude CLI (comma-separated)', category: 'claude' },
-]
+const settings = defaultSettings
 
 const promptTemplates = [
   {
