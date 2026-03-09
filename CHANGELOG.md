@@ -1,5 +1,11 @@
 # ultradev-dashboard
 
+## 1.4.0
+
+### Minor Changes
+
+- [#24](https://github.com/Berget-Industries/ultradev/pull/24) [`d7e6936`](https://github.com/Berget-Industries/ultradev/commit/d7e693663791996f395b0f61128f59438339dde1) Thanks [@willebergh](https://github.com/willebergh)! - Expand Settings page with 17 new DB-driven settings (worker concurrency, notifications, logging, appearance, feature flags, GitHub filtering), system info panel, import/export, connection tests, and danger zone (reset, clear caches, purge logs, restart services).
+
 ## 1.3.0
 
 ### Minor Changes
