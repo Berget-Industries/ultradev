@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import { prisma } from '../prisma.js'
+import { toSnakeCase } from '../lib/case.js'
 import { invalidateTemplateCache } from '../orchestrator/prompt-loader.js'
 
 const router = Router()
@@ -8,12 +9,7 @@ const router = Router()
 router.get('/', async (_req, res) => {
   const rows = await prisma.promptTemplate.findMany({ orderBy: { slug: 'asc' } })
   res.json(rows.map(r => ({
-    slug: r.slug,
-    name: r.name,
-    description: r.description,
-    template: r.template,
-    max_attempts: r.maxAttempts,
-    timeout_ms: r.timeoutMs,
+    ...toSnakeCase(r),
     updated_at: r.updatedAt.toISOString(),
   })))
 })
@@ -37,24 +33,32 @@ router.get('/:slug', async (req, res) => {
 router.put('/:slug', async (req, res) => {
   const { template, max_attempts, timeout_ms, name, description } = req.body
   try {
+    const data: Record<string, any> = {}
+    if (template !== undefined) data.template = template
+    if (name !== undefined) data.name = name
+    if (description !== undefined) data.description = description
+    if (max_attempts !== undefined) {
+      const parsed = parseInt(max_attempts, 10)
+      if (!Number.isFinite(parsed) || parsed < 1) {
+        return res.status(400).json({ error: 'max_attempts must be a positive integer' })
+      }
+      data.maxAttempts = parsed
+    }
+    if (timeout_ms !== undefined) {
+      const parsed = parseInt(timeout_ms, 10)
+      if (!Number.isFinite(parsed) || parsed < 1000) {
+        return res.status(400).json({ error: 'timeout_ms must be at least 1000' })
+      }
+      data.timeoutMs = parsed
+    }
+
     const row = await prisma.promptTemplate.update({
       where: { slug: req.params.slug },
-      data: {
-        ...(template !== undefined && { template }),
-        ...(max_attempts !== undefined && { maxAttempts: max_attempts }),
-        ...(timeout_ms !== undefined && { timeoutMs: timeout_ms }),
-        ...(name !== undefined && { name }),
-        ...(description !== undefined && { description }),
-      },
+      data,
     })
     invalidateTemplateCache()
     res.json({
-      slug: row.slug,
-      name: row.name,
-      description: row.description,
-      template: row.template,
-      max_attempts: row.maxAttempts,
-      timeout_ms: row.timeoutMs,
+      ...toSnakeCase(row),
       updated_at: row.updatedAt.toISOString(),
     })
   } catch (err: any) {

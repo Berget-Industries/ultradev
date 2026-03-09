@@ -268,13 +268,23 @@ function TemplateEditor({
   }, [templateText])
 
   const handleSave = async () => {
+    const maxAttemptsNum = parseInt(maxAttempts, 10)
+    const timeoutMsNum = parseInt(timeoutMs, 10)
+    if (Number.isNaN(maxAttemptsNum) || maxAttemptsNum < 1) {
+      setToast({ message: 'Max attempts must be a positive number', type: 'error' })
+      return
+    }
+    if (Number.isNaN(timeoutMsNum) || timeoutMsNum < 1000) {
+      setToast({ message: 'Timeout must be at least 1000ms', type: 'error' })
+      return
+    }
     setSaving(true)
     setToast(null)
     try {
       await api.put(`/prompt-templates/${template.slug}`, {
         template: templateText,
-        max_attempts: parseInt(maxAttempts, 10),
-        timeout_ms: parseInt(timeoutMs, 10),
+        max_attempts: maxAttemptsNum,
+        timeout_ms: timeoutMsNum,
       })
       setToast({ message: 'Template saved successfully', type: 'success' })
       onSaved()
@@ -436,7 +446,7 @@ export default function SettingsPage() {
     () => api.get('/prompt-templates'),
   )
 
-  if (settings === null && templates === null) return <SettingsSkeleton />
+  if (settings === null || templates === null) return <SettingsSkeleton />
 
   return (
     <div className="space-y-6">

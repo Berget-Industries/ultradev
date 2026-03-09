@@ -51,8 +51,9 @@ async function lookupPrByBranch(repo: string, branchName: string): Promise<strin
 
   try {
     const row = await prisma.githubPr.findFirst({
-      where: { repo, headRef: branchName },
+      where: { repo, headRef: branchName, state: 'OPEN' },
       select: { number: true },
+      orderBy: { updatedAt: 'desc' },
     })
     const prUrl = row ? `https://github.com/${repo}/pull/${row.number}` : null
     prLookupCache.set(cacheKey, { prUrl, fetchedAt: Date.now() })

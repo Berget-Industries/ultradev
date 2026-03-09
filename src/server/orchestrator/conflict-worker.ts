@@ -141,7 +141,12 @@ async function buildConflictPrompt(
   headRefName: string,
   baseRefName: string,
 ): Promise<string> {
-  const tmpl = await getPromptTemplate('conflict-resolver')
+  let tmpl: Awaited<ReturnType<typeof getPromptTemplate>> = null
+  try {
+    tmpl = await getPromptTemplate('conflict-resolver')
+  } catch (err: any) {
+    console.error('[conflict-worker] Failed to load prompt template:', err.message)
+  }
   if (tmpl) {
     return renderTemplate(tmpl.template, {
       repo,

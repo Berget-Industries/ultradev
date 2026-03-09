@@ -37,6 +37,7 @@ model GithubPr {
   syncedAt           DateTime  @default(now()) @map("synced_at") @db.Timestamptz
 
   @@unique([repo, number])
+  @@index([repo, headRef, state], map: "idx_github_prs_repo_head_ref_state")
   @@index([author, state], map: "idx_github_prs_author_state")
   @@index([author, state, reviewDecision], map: "idx_github_prs_author_state_review")
   @@index([author, state, mergeable], map: "idx_github_prs_author_state_mergeable")

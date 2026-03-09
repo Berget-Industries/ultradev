@@ -24,9 +24,13 @@ router.post('/', async (req, res) => {
   const { title, description, column_id, github_url, project_id } = req.body
   if (!title) return res.status(400).json({ error: 'title is required' })
 
-  const col = (column_id || 'backlog') as TaskColumn
+  const col = (column_id || 'backlog') as string
+  if (!validColumns.has(col)) {
+    return res.status(400).json({ error: `Invalid column_id. Must be one of: ${[...validColumns].join(', ')}` })
+  }
+
   const agg = await prisma.task.aggregate({
-    where: { columnId: col },
+    where: { columnId: col as TaskColumn },
     _max: { position: true },
   })
   const position = (agg._max.position ?? 0) + 1
@@ -35,7 +39,7 @@ router.post('/', async (req, res) => {
     data: {
       title,
       description: description || '',
-      columnId: col,
+      columnId: col as TaskColumn,
       position,
       githubUrl: github_url || '',
       projectId: project_id || null,
@@ -68,10 +72,17 @@ router.put('/:id/move', async (req, res) => {
   if (!column_id || position === undefined) {
     return res.status(400).json({ error: 'column_id and position are required' })
   }
+  if (!validColumns.has(column_id as string)) {
+    return res.status(400).json({ error: `Invalid column_id. Must be one of: ${[...validColumns].join(', ')}` })
+  }
+  const pos = typeof position === 'number' ? position : parseInt(position, 10)
+  if (!Number.isFinite(pos)) {
+    return res.status(400).json({ error: 'position must be a number' })
+  }
   try {
     const row = await prisma.task.update({
       where: { id: parseInt(req.params.id) },
-      data: { columnId: column_id as TaskColumn, position },
+      data: { columnId: column_id as TaskColumn, position: pos },
     })
     res.json(toSnakeCase(row))
   } catch (err: any) {
@@ -81,7 +92,11 @@ router.put('/:id/move', async (req, res) => {
 })
 
 router.delete('/:id', async (req, res) => {
-  await prisma.task.delete({ where: { id: parseInt(req.params.id) } }).catch(() => {})
+  try {
+    await prisma.task.delete({ where: { id: parseInt(req.params.id) } })
+  } catch (err: any) {
+    if (err.code !== 'P2025') throw err
+  }
   res.json({ ok: true })
 })
 

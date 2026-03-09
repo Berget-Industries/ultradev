@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import { prisma } from '../prisma.js'
-import { invalidateSettingsCache, refreshConfig } from '../orchestrator/config.js'
+import { invalidateAllCaches, refreshConfig, loadConfig } from '../orchestrator/config.js'
+import { updateGitHubSyncInterval } from '../orchestrator/github-sync.js'
 
 const router = Router()
 
@@ -30,19 +31,31 @@ router.get('/', async (_req, res) => {
 // PUT /api/settings — bulk update { key: value, ... }
 router.put('/', async (req, res) => {
   const updates = req.body as Record<string, string>
+  const errors: string[] = []
 
   for (const [key, value] of Object.entries(updates)) {
-    await prisma.setting.update({
-      where: { key },
-      data: { value: String(value) },
-    }).catch(() => {
-      // Key doesn't exist — skip
-    })
+    try {
+      await prisma.setting.update({
+        where: { key },
+        data: { value: String(value) },
+      })
+    } catch (err: any) {
+      if (err.code === 'P2025') continue // Key doesn't exist — skip
+      errors.push(`${key}: ${err.message}`)
+    }
   }
 
-  // Invalidate config cache so next loadConfig() picks up changes
-  invalidateSettingsCache()
-  await refreshConfig()
+  if (errors.length > 0) {
+    res.status(500).json({ ok: false, errors })
+    return
+  }
+
+  // Invalidate config cache and refresh
+  invalidateAllCaches()
+  const config = await refreshConfig()
+
+  // Reconfigure running services with new settings
+  updateGitHubSyncInterval(config.github.pollIntervalMs)
 
   res.json({ ok: true })
 })

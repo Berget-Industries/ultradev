@@ -19,7 +19,6 @@ import { handleIssue } from './github-poller.js'
 import { handlePrReview, cleanStalePrStates } from './pr-poller.js'
 import { handleConflict } from './conflict-poller.js'
 import { prisma } from '../prisma.js'
-import { getPromptTemplate } from './prompt-loader.js'
 import type { GithubIssue, GithubPr } from '@prisma/client'
 
 let intervalId: ReturnType<typeof setInterval> | null = null

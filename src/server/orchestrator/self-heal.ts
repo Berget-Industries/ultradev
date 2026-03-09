@@ -76,7 +76,12 @@ async function attemptFix(component: string, error: string, context: { file?: st
     const fileSection = context.file ? `## File: ${context.file}` : ''
     const extraContext = context.extra ? `## Context: ${context.extra}` : ''
 
-    const tmpl = await getPromptTemplate('self-heal')
+    let tmpl: Awaited<ReturnType<typeof getPromptTemplate>> = null
+    try {
+      tmpl = await getPromptTemplate('self-heal')
+    } catch (err: any) {
+      console.error('[self-heal] Failed to load prompt template:', err.message)
+    }
     const prompt = tmpl
       ? renderTemplate(tmpl.template, {
           component,

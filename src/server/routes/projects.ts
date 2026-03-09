@@ -1,15 +1,19 @@
 import { Router } from 'express'
 import { prisma } from '../prisma.js'
 import { toSnakeCase } from '../lib/case.js'
-import type { ProjectStatus } from '@prisma/client'
+import type { ProjectStatus, Project, ProjectCronjob } from '@prisma/client'
 
 const router = Router()
 
-function projectWithCronjobIds(project: any) {
+const VALID_PROJECT_STATUSES = ['active', 'paused', 'archived'] as const
+
+type ProjectWithCronjobs = Project & { projectCronjobs: ProjectCronjob[] }
+
+function projectWithCronjobIds(project: ProjectWithCronjobs) {
   const { projectCronjobs, ...rest } = project
   return {
     ...toSnakeCase(rest),
-    cronjob_ids: (projectCronjobs || []).map((pc: any) => pc.cronjobId),
+    cronjob_ids: projectCronjobs.map((pc) => pc.cronjobId),
   }
 }
 
@@ -40,7 +44,7 @@ router.post('/', async (req, res) => {
         name,
         repoUrl: repo_url || '',
         description: description || '',
-        status: (status || 'active') as ProjectStatus,
+        status: (VALID_PROJECT_STATUSES as readonly string[]).includes(status) ? status as ProjectStatus : 'active',
       },
     })
     if (Array.isArray(cronjob_ids) && cronjob_ids.length > 0) {
@@ -69,7 +73,7 @@ router.put('/:id', async (req, res) => {
           ...(name !== undefined && { name }),
           ...(repo_url !== undefined && { repoUrl: repo_url }),
           ...(description !== undefined && { description }),
-          ...(status !== undefined && { status: status as ProjectStatus }),
+          ...(status !== undefined && (VALID_PROJECT_STATUSES as readonly string[]).includes(status) && { status: status as ProjectStatus }),
         },
       })
       if (Array.isArray(cronjob_ids)) {
@@ -87,6 +91,7 @@ router.put('/:id', async (req, res) => {
         where: { id },
         include: { projectCronjobs: true },
       })
+      if (!fresh) throw Object.assign(new Error('Not found'), { code: 'P2025' })
       return projectWithCronjobIds(fresh)
     })
     res.json(result)
@@ -97,7 +102,11 @@ router.put('/:id', async (req, res) => {
 })
 
 router.delete('/:id', async (req, res) => {
-  await prisma.project.delete({ where: { id: parseInt(req.params.id) } }).catch(() => {})
+  try {
+    await prisma.project.delete({ where: { id: parseInt(req.params.id) } })
+  } catch (err: any) {
+    if (err.code !== 'P2025') throw err
+  }
   res.json({ ok: true })
 })
 

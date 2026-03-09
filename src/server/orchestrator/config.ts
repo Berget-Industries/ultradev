@@ -93,8 +93,11 @@ export async function refreshConfig(): Promise<Config> {
   return cachedConfig
 }
 
-/** Invalidate config cache — next loadConfig() returns env fallback until refreshConfig() runs. */
-export { invalidateSettingsCache }
+/** Invalidate config cache — clears both the settings cache and this module's cached config. */
+export function invalidateAllCaches() {
+  cachedConfig = null
+  invalidateSettingsCache()
+}
 
 function parseTriggerWhitelist(raw: string): TriggerRule[] {
   if (!raw.trim()) return []

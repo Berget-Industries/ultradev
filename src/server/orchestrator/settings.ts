@@ -27,7 +27,7 @@ export async function loadSettingsConfig(): Promise<Config> {
   const config: Config = {
     github: {
       username: get('github.username', process.env.ULTRADEV_GITHUB_USERNAME, 'ultradev'),
-      pollIntervalMs: parseInt(get('github.poll_interval_ms', process.env.ULTRADEV_POLL_INTERVAL_MS, '120000'), 10),
+      pollIntervalMs: safeParseInt(get('github.poll_interval_ms', process.env.ULTRADEV_POLL_INTERVAL_MS, '120000'), 120000),
     },
     discord: {
       enabled: get('discord.enabled', process.env.ULTRADEV_DISCORD_ENABLED, 'true') !== 'false',
@@ -40,7 +40,7 @@ export async function loadSettingsConfig(): Promise<Config> {
     },
     errorWatcher: {
       enabled: get('error_watcher.enabled', process.env.ULTRADEV_ERROR_WATCHER_ENABLED, 'true') !== 'false',
-      intervalMs: parseInt(get('error_watcher.interval_ms', process.env.ULTRADEV_ERROR_WATCHER_INTERVAL_MS, String(12 * 60 * 60 * 1000)), 10),
+      intervalMs: safeParseInt(get('error_watcher.interval_ms', process.env.ULTRADEV_ERROR_WATCHER_INTERVAL_MS, String(12 * 60 * 60 * 1000)), 12 * 60 * 60 * 1000),
       targetRepo: get('error_watcher.target_repo', process.env.ULTRADEV_ERROR_WATCHER_REPO, '') || null,
       labels: get('error_watcher.labels', process.env.ULTRADEV_ERROR_WATCHER_LABELS, 'production,bug,auto-triaged')
         .split(',').map(l => l.trim()).filter(Boolean),
@@ -57,6 +57,11 @@ export async function loadSettingsConfig(): Promise<Config> {
 
   cache = { config, ts: Date.now() }
   return config
+}
+
+function safeParseInt(val: string, fallback: number): number {
+  const parsed = parseInt(val, 10)
+  return Number.isNaN(parsed) ? fallback : parsed
 }
 
 function parseTriggerWhitelist(raw: string): TriggerRule[] {
