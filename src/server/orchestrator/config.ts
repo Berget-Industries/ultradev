@@ -1,12 +1,8 @@
 import { join } from 'path'
 import { loadSettingsConfig, invalidateSettingsCache } from './settings.js'
+import { HOME, splitCsv, parseTriggerWhitelist, type TriggerRule } from '../lib/config-helpers.js'
 
-const HOME = process.env.HOME || '/home/' + (process.env.USER || 'user')
-
-export interface TriggerRule {
-  channelId: string
-  authorId: string
-}
+export type { TriggerRule }
 
 export interface ErrorWatcherConfig {
   enabled: boolean
@@ -66,10 +62,6 @@ export interface Config {
 
 /** Cached config — loaded synchronously from the last async fetch. */
 let cachedConfig: Config | null = null
-
-function splitCsv(raw: string): string[] {
-  return raw.split(',').map(s => s.trim()).filter(Boolean)
-}
 
 function envFallbackConfig(): Config {
   const flags = process.env.ULTRADEV_CLAUDE_FLAGS
@@ -155,10 +147,3 @@ export function invalidateAllCaches() {
   invalidateSettingsCache()
 }
 
-function parseTriggerWhitelist(raw: string): TriggerRule[] {
-  if (!raw.trim()) return []
-  return raw.split(',').map(entry => {
-    const [channelId, authorId] = entry.trim().split(':')
-    return { channelId, authorId }
-  }).filter(r => r.channelId && r.authorId)
-}

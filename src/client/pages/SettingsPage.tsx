@@ -1,8 +1,8 @@
-import { useState, useMemo, useRef } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import {
   Settings, FileText, Save, Eye, EyeOff, ChevronDown, ChevronRight,
   Check, AlertCircle, Server, Download, Upload, RotateCcw, Trash2,
-  Zap, Database, Wifi, WifiOff, RefreshCw,
+  Zap, Database, RefreshCw,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -229,6 +229,17 @@ function ConfigurationSection({
   const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(new Set())
   const [saving, setSaving] = useState(false)
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null)
+
+  // Re-sync form values when settings refresh (e.g. after save)
+  useEffect(() => {
+    const updated: Record<string, string> = {}
+    for (const entries of Object.values(settings)) {
+      for (const entry of entries) {
+        updated[entry.key] = entry.type === 'secret' ? '' : entry.value
+      }
+    }
+    setValues(updated)
+  }, [settings])
 
   const categories = Object.keys(settings)
 
@@ -618,7 +629,7 @@ function ImportExportSection({ onImported }: { onImported: () => void }) {
   const handleExport = async () => {
     setExporting(true)
     try {
-      const data = await api.post<any>('/settings/export', {})
+      const data = await api.get<any>('/settings/export')
       const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')

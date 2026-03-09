@@ -1,8 +1,7 @@
 import { prisma } from '../prisma.js'
-import type { Config, TriggerRule } from './config.js'
+import type { Config } from './config.js'
 import { join } from 'path'
-
-const HOME = process.env.HOME || '/home/' + (process.env.USER || 'user')
+import { HOME, splitCsv, parseTriggerWhitelist, safeParseInt, expandTilde } from '../lib/config-helpers.js'
 
 let cache: { config: Config; ts: number } | null = null
 const CACHE_TTL = 10_000
@@ -20,10 +19,6 @@ export async function loadSettingsConfig(): Promise<Config> {
   function get(key: string, fallbackEnv: string | undefined, defaultVal: string): string {
     if (map.has(key)) return map.get(key)!
     return fallbackEnv || defaultVal
-  }
-
-  function splitCsv(raw: string): string[] {
-    return raw.split(',').map(s => s.trim()).filter(Boolean)
   }
 
   const flags = get('claude.flags', process.env.ULTRADEV_CLAUDE_FLAGS, '--dangerously-skip-permissions')
@@ -62,8 +57,8 @@ export async function loadSettingsConfig(): Promise<Config> {
       discordOnFailure: get('notifications.discord_on_failure', process.env.ULTRADEV_NOTIFICATIONS_DISCORD_ON_FAILURE, 'true') !== 'false',
     },
     paths: {
-      repos: get('paths.repos', process.env.ULTRADEV_REPOS_DIR, join(HOME, 'ultradev', 'repos')),
-      logs: get('paths.logs', process.env.ULTRADEV_LOGS_DIR, join(HOME, 'ultradev', 'logs')),
+      repos: expandTilde(get('paths.repos', process.env.ULTRADEV_REPOS_DIR, join(HOME, 'ultradev', 'repos'))),
+      logs: expandTilde(get('paths.logs', process.env.ULTRADEV_LOGS_DIR, join(HOME, 'ultradev', 'logs'))),
     },
     claude: {
       command: get('claude.command', process.env.ULTRADEV_CLAUDE_COMMAND, 'claude'),
@@ -87,17 +82,4 @@ export async function loadSettingsConfig(): Promise<Config> {
 
   cache = { config, ts: Date.now() }
   return config
-}
-
-function safeParseInt(val: string, fallback: number): number {
-  const parsed = parseInt(val, 10)
-  return Number.isNaN(parsed) ? fallback : parsed
-}
-
-function parseTriggerWhitelist(raw: string): TriggerRule[] {
-  if (!raw.trim()) return []
-  return raw.split(',').map(entry => {
-    const [channelId, authorId] = entry.trim().split(':')
-    return { channelId, authorId }
-  }).filter(r => r.channelId && r.authorId)
 }

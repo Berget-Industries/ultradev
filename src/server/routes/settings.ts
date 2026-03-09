@@ -2,12 +2,14 @@ import { Router } from 'express'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { readdirSync, statSync, unlinkSync } from 'fs'
-import { join } from 'path'
+import { join, resolve } from 'path'
 import { createRequire } from 'module'
 import { prisma } from '../prisma.js'
 import { invalidateAllCaches, refreshConfig, loadConfig } from '../orchestrator/config.js'
 import { updateGitHubSyncInterval } from '../orchestrator/github-sync.js'
 import { isRedisConnected } from '../cache.js'
+import { expandTilde } from '../lib/config-helpers.js'
+import { defaultSettings } from '../lib/defaults.js'
 
 const require = createRequire(import.meta.url)
 const execFileAsync = promisify(execFile)
@@ -40,6 +42,11 @@ router.get('/', async (_req, res) => {
 router.put('/', async (req, res) => {
   const updates = req.body as Record<string, string>
 
+  if (!updates || typeof updates !== 'object' || Array.isArray(updates)) {
+    res.status(400).json({ ok: false, error: 'Body must be a JSON object' })
+    return
+  }
+
   try {
     await prisma.$transaction(async (tx) => {
       for (const [key, value] of Object.entries(updates)) {
@@ -54,7 +61,7 @@ router.put('/', async (req, res) => {
       res.status(400).json({ ok: false, error: 'Unknown setting key' })
       return
     }
-    res.status(500).json({ ok: false, error: err.message })
+    res.status(500).json({ ok: false, error: 'Failed to save settings' })
     return
   }
 
@@ -95,8 +102,8 @@ router.get('/system-info', async (_req, res) => {
     } catch { return { files: 0, bytes: 0 } }
   }
 
-  const logsDir = config.paths.logs.replace(/^~/, process.env.HOME || '/tmp')
-  const reposDir = config.paths.repos.replace(/^~/, process.env.HOME || '/tmp')
+  const logsDir = expandTilde(config.paths.logs)
+  const reposDir = expandTilde(config.paths.repos)
 
   // Node.js memory
   const mem = process.memoryUsage()
@@ -120,8 +127,8 @@ router.get('/system-info', async (_req, res) => {
   })
 })
 
-// POST /api/settings/export — export all settings as JSON
-router.post('/export', async (_req, res) => {
+// GET /api/settings/export — export all settings as JSON
+router.get('/export', async (_req, res) => {
   const settings = await prisma.setting.findMany({ orderBy: { key: 'asc' } })
   const templates = await prisma.promptTemplate.findMany({ orderBy: { slug: 'asc' } })
 
@@ -149,6 +156,9 @@ router.post('/import', async (req, res) => {
     promptTemplates?: Array<{ slug: string; name: string; description: string; template: string; maxAttempts: number; timeoutMs: number }>
   }
 
+  // Validate that imported setting keys are known
+  const validKeys = new Set(defaultSettings.map(s => s.key))
+
   let settingsCount = 0
   let templatesCount = 0
 
@@ -158,9 +168,11 @@ router.post('/import', async (req, res) => {
         for (const s of settings) {
           // Skip empty secrets (don't overwrite existing secrets with empty values)
           if (s.type === 'secret' && !s.value) continue
+          // Only allow known setting keys
+          if (!validKeys.has(s.key)) continue
           await tx.setting.upsert({
             where: { key: s.key },
-            update: { value: s.value, type: s.type, label: s.label, description: s.description, category: s.category },
+            update: { value: s.value },
             create: { key: s.key, value: s.value, type: s.type, label: s.label, description: s.description, category: s.category },
           })
           settingsCount++
@@ -182,60 +194,23 @@ router.post('/import', async (req, res) => {
     await refreshConfig()
 
     res.json({ ok: true, imported: { settings: settingsCount, promptTemplates: templatesCount } })
-  } catch (err: any) {
-    res.status(500).json({ ok: false, error: err.message })
+  } catch {
+    res.status(500).json({ ok: false, error: 'Failed to import settings' })
   }
 })
 
-// POST /api/settings/reset — reset all settings to defaults (re-run seed logic)
+// POST /api/settings/reset — reset all settings to defaults
 router.post('/reset', async (_req, res) => {
   try {
-    // Delete all settings and re-seed with defaults
     await prisma.setting.deleteMany()
-
-    // Re-seed inline (same data as seed.ts)
-    const defaults = [
-      { key: 'github.username', value: 'ultradev', type: 'string', label: 'GitHub Username', description: 'GitHub user to poll for assigned issues', category: 'github' },
-      { key: 'github.poll_interval_ms', value: '120000', type: 'number', label: 'Poll Interval (ms)', description: 'How often to sync with GitHub', category: 'github' },
-      { key: 'github.auto_assign', value: 'false', type: 'boolean', label: 'Auto-Assign Issues', description: 'Automatically assign synced issues to the configured user', category: 'github' },
-      { key: 'github.default_labels', value: '', type: 'string', label: 'Default Labels Filter', description: 'Only sync issues matching these labels (comma-separated, empty = all)', category: 'github' },
-      { key: 'github.repos_whitelist', value: '', type: 'string', label: 'Repos Whitelist', description: 'Only sync these repos (comma-separated owner/repo, empty = all)', category: 'github' },
-      { key: 'discord.enabled', value: 'true', type: 'boolean', label: 'Enabled', description: 'Enable Discord bot integration', category: 'discord' },
-      { key: 'discord.token', value: '', type: 'secret', label: 'Bot Token', description: 'Discord bot token', category: 'discord' },
-      { key: 'discord.owner_user_id', value: '', type: 'string', label: 'Owner User ID', description: 'Discord user ID of the bot owner', category: 'discord' },
-      { key: 'discord.notify_channel_id', value: '', type: 'string', label: 'Notify Channel ID', description: 'Channel for notifications', category: 'discord' },
-      { key: 'discord.trigger_whitelist', value: '', type: 'string', label: 'Trigger Whitelist', description: 'channelId:authorId pairs (comma-separated)', category: 'discord' },
-      { key: 'error_watcher.enabled', value: 'true', type: 'boolean', label: 'Error Watcher Enabled', description: 'Enable error watcher', category: 'worker' },
-      { key: 'error_watcher.interval_ms', value: '43200000', type: 'number', label: 'Error Watcher Interval (ms)', description: 'How often to scan for errors', category: 'worker' },
-      { key: 'error_watcher.target_repo', value: '', type: 'string', label: 'Error Watcher Target Repo', description: 'Repo to create issues in (owner/repo)', category: 'worker' },
-      { key: 'error_watcher.labels', value: 'production,bug,auto-triaged', type: 'string', label: 'Error Watcher Labels', description: 'Labels for auto-created issues', category: 'worker' },
-      { key: 'worker.max_concurrent', value: '1', type: 'number', label: 'Max Concurrent Workers', description: 'Maximum number of parallel Claude workers', category: 'worker' },
-      { key: 'worker.default_timeout_ms', value: '1800000', type: 'number', label: 'Default Timeout (ms)', description: 'Default task timeout (30 min default)', category: 'worker' },
-      { key: 'notifications.enabled', value: 'true', type: 'boolean', label: 'Notifications Enabled', description: 'Master toggle for all notifications', category: 'notifications' },
-      { key: 'notifications.discord_on_success', value: 'true', type: 'boolean', label: 'Notify on Success', description: 'Send Discord notification when a task completes successfully', category: 'notifications' },
-      { key: 'notifications.discord_on_failure', value: 'true', type: 'boolean', label: 'Notify on Failure', description: 'Send Discord notification when a task fails', category: 'notifications' },
-      { key: 'paths.repos', value: '~/ultradev/repos', type: 'string', label: 'Repos Directory', description: 'Where to clone repositories', category: 'paths' },
-      { key: 'paths.logs', value: '~/ultradev/logs', type: 'string', label: 'Logs Directory', description: 'Where to store worker logs', category: 'paths' },
-      { key: 'claude.command', value: 'claude', type: 'string', label: 'Claude Command', description: 'Path to the Claude CLI', category: 'claude' },
-      { key: 'claude.flags', value: '--dangerously-skip-permissions', type: 'string', label: 'Claude Flags', description: 'Flags passed to Claude CLI (comma-separated)', category: 'claude' },
-      { key: 'log.level', value: 'info', type: 'string', label: 'Log Level', description: 'Log verbosity: debug, info, warn, error', category: 'logging' },
-      { key: 'log.retention_days', value: '30', type: 'number', label: 'Log Retention (days)', description: 'Auto-delete logs older than this many days (0 = never)', category: 'logging' },
-      { key: 'ui.theme', value: 'dark', type: 'string', label: 'Theme', description: 'UI theme: dark, light, system', category: 'appearance' },
-      { key: 'ui.page_size', value: '25', type: 'number', label: 'Default Page Size', description: 'Default number of items per page in tables', category: 'appearance' },
-      { key: 'features.auto_pr_review', value: 'true', type: 'boolean', label: 'Auto PR Review', description: 'Automatically address PR review feedback', category: 'features' },
-      { key: 'features.self_heal', value: 'true', type: 'boolean', label: 'Self Heal', description: 'Auto-fix system errors when detected', category: 'features' },
-      { key: 'features.cron_scheduler', value: 'true', type: 'boolean', label: 'Cron Scheduler', description: 'Enable the cron job scheduler', category: 'features' },
-      { key: 'features.auto_merge', value: 'false', type: 'boolean', label: 'Auto Merge', description: 'Auto-merge PRs after all checks pass and approval received', category: 'features' },
-    ]
-
-    await prisma.setting.createMany({ data: defaults })
+    await prisma.setting.createMany({ data: defaultSettings })
 
     invalidateAllCaches()
     await refreshConfig()
 
-    res.json({ ok: true, reset: defaults.length })
-  } catch (err: any) {
-    res.status(500).json({ ok: false, error: err.message })
+    res.json({ ok: true, reset: defaultSettings.length })
+  } catch {
+    res.status(500).json({ ok: false, error: 'Failed to reset settings' })
   }
 })
 
@@ -249,8 +224,21 @@ router.post('/clear-caches', async (_req, res) => {
 router.post('/purge-logs', async (req, res) => {
   const { olderThanDays } = req.body as { olderThanDays?: number }
   const days = olderThanDays ?? 30
+
+  if (typeof days !== 'number' || !Number.isFinite(days) || days < 1) {
+    res.status(400).json({ ok: false, error: 'olderThanDays must be a positive number (>= 1)' })
+    return
+  }
+
   const config = loadConfig()
-  const logsDir = config.paths.logs.replace(/^~/, process.env.HOME || '/tmp')
+  const logsDir = resolve(expandTilde(config.paths.logs))
+
+  // Safety: only allow purging inside the configured logs directory
+  const homeDir = process.env.HOME || '/tmp'
+  if (!logsDir.startsWith(homeDir)) {
+    res.status(400).json({ ok: false, error: 'Logs directory must be within the home directory' })
+    return
+  }
 
   let deleted = 0
   const cutoff = Date.now() - days * 24 * 60 * 60 * 1000
@@ -267,8 +255,8 @@ router.post('/purge-logs', async (req, res) => {
       } catch { /* skip */ }
     }
     res.json({ ok: true, deleted })
-  } catch (err: any) {
-    res.status(500).json({ ok: false, error: err.message })
+  } catch {
+    res.status(500).json({ ok: false, error: 'Failed to purge logs' })
   }
 })
 
@@ -285,7 +273,7 @@ router.post('/test-connection', async (req, res) => {
         })
         res.json({ ok: true, message: stdout.trim() })
       } catch (err: any) {
-        res.json({ ok: false, message: err.stderr?.trim() || err.message })
+        res.json({ ok: false, message: err.stderr?.trim() || 'GitHub auth check failed' })
       }
       break
     }
@@ -293,8 +281,8 @@ router.post('/test-connection', async (req, res) => {
       try {
         await prisma.$queryRaw`SELECT 1`
         res.json({ ok: true, message: 'PostgreSQL connection OK' })
-      } catch (err: any) {
-        res.json({ ok: false, message: err.message })
+      } catch {
+        res.json({ ok: false, message: 'PostgreSQL connection failed' })
       }
       break
     }
@@ -310,7 +298,6 @@ router.post('/test-connection', async (req, res) => {
       if (!config.discord.token) {
         res.json({ ok: false, message: 'No Discord token configured' })
       } else {
-        // Just check if we have a token configured — actual status comes from the bot
         res.json({ ok: config.discord.enabled, message: config.discord.enabled ? 'Discord bot enabled' : 'Discord bot disabled' })
       }
       break
@@ -327,18 +314,13 @@ router.post('/restart-service', async (req, res) => {
   switch (service) {
     case 'orchestrator': {
       try {
-        // Restart via systemd if available, otherwise just refresh config
-        try {
-          await execFileAsync('systemctl', ['--user', 'restart', 'ultradev'], { timeout: 15_000, encoding: 'utf-8' })
-          res.json({ ok: true, message: 'Orchestrator service restarted' })
-        } catch {
-          // No systemd — just refresh config as fallback
-          invalidateAllCaches()
-          await refreshConfig()
-          res.json({ ok: true, message: 'Config refreshed (no systemd service found)' })
-        }
-      } catch (err: any) {
-        res.status(500).json({ ok: false, message: err.message })
+        await execFileAsync('systemctl', ['--user', 'restart', 'ultradev'], { timeout: 15_000, encoding: 'utf-8' })
+        res.json({ ok: true, message: 'Orchestrator service restarted' })
+      } catch {
+        // No systemd — just refresh config as fallback
+        invalidateAllCaches()
+        await refreshConfig()
+        res.json({ ok: true, message: 'Config refreshed (no systemd service found)' })
       }
       break
     }
