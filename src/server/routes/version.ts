@@ -102,6 +102,7 @@ async function runUpdate(latestTag: string) {
 
     // Step 4 — restart
     setStepStatus('restart', 'in_progress', 'Restarting server…')
+    setStepStatus('restart', 'done', 'Restart initiated')
     // Reset active flag so a stale state doesn't block future updates
     // (defensive: if process.exit somehow doesn't fire)
     updateState.active = false

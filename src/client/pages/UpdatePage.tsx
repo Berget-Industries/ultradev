@@ -116,14 +116,12 @@ export default function UpdatePage() {
       // Connection lost — server may be restarting
       es.close()
     }
-
-    return es
   }, [])
 
   useEffect(() => {
-    const es = connectSSE()
+    connectSSE()
     return () => {
-      es.close()
+      eventSourceRef.current?.close()
     }
   }, [connectSSE])
 
