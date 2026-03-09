@@ -475,13 +475,9 @@ export default function SettingsPage() {
         <h1 className="text-2xl font-bold">Settings</h1>
       </div>
 
-      {settings && (
-        <ConfigurationSection settings={settings} onSaved={refreshSettings} />
-      )}
+      <ConfigurationSection settings={settings} onSaved={refreshSettings} />
 
-      {templates && (
-        <PromptTemplatesSection templates={templates} onSaved={refreshTemplates} />
-      )}
+      <PromptTemplatesSection templates={templates} onSaved={refreshTemplates} />
     </div>
   )
 }

@@ -51,7 +51,7 @@ router.post('/', async (req, res) => {
       columnId: col as TaskColumn,
       position,
       githubUrl: github_url || '',
-      projectId: project_id != null ? parseInt(project_id, 10) || null : null,
+      projectId: project_id != null ? parseIntStrict(String(project_id)) : null,
     },
   })
   res.status(201).json(toSnakeCase(row))

@@ -12,11 +12,15 @@ function parseId(raw: string): number | null {
   return parseInt(raw, 10)
 }
 
-function parseDateField(raw: unknown): Date | null | undefined {
+class DateValidationError extends Error {
+  constructor(field: string) { super(`Invalid ${field} date`); this.name = 'DateValidationError' }
+}
+
+function parseDateField(raw: unknown, field: string): Date | null | undefined {
   if (raw === undefined) return undefined
   if (raw === null) return null
   const d = new Date(raw as string)
-  if (isNaN(d.getTime())) return undefined // signals invalid
+  if (isNaN(d.getTime())) throw new DateValidationError(field)
   return d
 }
 
@@ -51,11 +55,13 @@ router.put('/:id', async (req, res) => {
   if (status !== undefined && !VALID_STATUSES.includes(status as CronjobStatus)) {
     return res.status(400).json({ error: `Invalid status. Must be one of: ${VALID_STATUSES.join(', ')}` })
   }
-  if (last_run !== undefined && last_run !== null && parseDateField(last_run) === undefined) {
-    return res.status(400).json({ error: 'Invalid last_run date' })
-  }
-  if (next_run !== undefined && next_run !== null && parseDateField(next_run) === undefined) {
-    return res.status(400).json({ error: 'Invalid next_run date' })
+  let parsedLastRun: Date | null | undefined
+  let parsedNextRun: Date | null | undefined
+  try {
+    parsedLastRun = parseDateField(last_run, 'last_run')
+    parsedNextRun = parseDateField(next_run, 'next_run')
+  } catch (err) {
+    return res.status(400).json({ error: err instanceof Error ? err.message : 'Invalid date' })
   }
   try {
     const row = await prisma.cronjob.update({
@@ -66,8 +72,8 @@ router.put('/:id', async (req, res) => {
         ...(description !== undefined && { description }),
         ...(command !== undefined && { command }),
         ...(status !== undefined && { status: status as CronjobStatus }),
-        ...(last_run !== undefined && { lastRun: parseDateField(last_run) as Date | null }),
-        ...(next_run !== undefined && { nextRun: parseDateField(next_run) as Date | null }),
+        ...(parsedLastRun !== undefined && { lastRun: parsedLastRun }),
+        ...(parsedNextRun !== undefined && { nextRun: parsedNextRun }),
       },
     })
     res.json(toSnakeCase(row))
