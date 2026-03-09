@@ -9,6 +9,7 @@ import { loadConfig } from './config.js'
 import { getPrsWithChangesRequested } from './github-sync.js'
 import type { Config } from './config.js'
 import type { IssueState } from './state.js'
+import type { ProjectConfig } from '../lib/project-config.js'
 
 const MAX_ATTEMPTS = 3
 
@@ -52,7 +53,7 @@ interface PrSummary {
   latest_review_at?: string | null
 }
 
-export async function handlePrReview(repo: string, prSummary: PrSummary, config: Config, state: IssueState | null) {
+export async function handlePrReview(repo: string, prSummary: PrSummary, config: Config, state: IssueState | null, projectConfig?: ProjectConfig) {
   const prNum = prSummary.number
   const key = `pr:${repo}#${prNum}`
   const reviewTimestamp = prSummary.latest_review_at || null
@@ -103,20 +104,23 @@ export async function handlePrReview(repo: string, prSummary: PrSummary, config:
 
     const result = await spawnPrWorker(repo, pr, reviews, reviewComments, config, logFile)
 
+    const shouldNotifySuccess = projectConfig?.notifyOnSuccess ?? true
+    const shouldNotifyFailure = projectConfig?.notifyOnFailure ?? true
+
     if (result.success && result.prUrl) {
       const existingUrls = getIssueState(key)?.prUrls || []
       const prUrls = existingUrls.includes(result.prUrl) ? existingUrls : [...existingUrls, result.prUrl]
       setIssueState(key, { status: 'done', prUrl: result.prUrl, prUrls, logFile: result.logFile, lastReviewAt: reviewTimestamp || undefined })
-      notify(`✅ **${repo}#${prNum}** — Review feedback pushed to PR: ${result.prUrl}`)
+      if (shouldNotifySuccess) notify(`✅ **${repo}#${prNum}** — Review feedback pushed to PR: ${result.prUrl}`)
     } else if (result.success) {
       setIssueState(key, { status: 'done', logFile: result.logFile, lastReviewAt: reviewTimestamp || undefined })
-      notify(`✅ **${repo}#${prNum}** — Changes addressed (no new commits detected).`)
+      if (shouldNotifySuccess) notify(`✅ **${repo}#${prNum}** — Changes addressed (no new commits detected).`)
     } else if (result.partial) {
       setIssueState(key, { status: 'failed', error: result.error, madeProgress: true, logFile: result.logFile })
-      notify(`⏸️ **${repo}#${prNum}** — Partial progress, will retry.`)
+      if (shouldNotifyFailure) notify(`⏸️ **${repo}#${prNum}** — Partial progress, will retry.`)
     } else {
       setIssueState(key, { status: 'failed', error: result.error, logFile: result.logFile })
-      notify(`❌ **${repo}#${prNum}** — Failed (attempt ${attempt}): ${result.error}`)
+      if (shouldNotifyFailure) notify(`❌ **${repo}#${prNum}** — Failed (attempt ${attempt}): ${result.error}`)
     }
   } catch (err: any) {
     console.error(`[pr-poller] Error handling PR ${prNum}:`, err.message)

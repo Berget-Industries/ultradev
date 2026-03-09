@@ -3,9 +3,12 @@ import { spawnConflictWorker } from './conflict-worker.js'
 import { notify } from './notifier.js'
 import type { Config } from './config.js'
 import type { GithubPr } from '@prisma/client'
+import type { ProjectConfig } from '../lib/project-config.js'
 
-export async function handleConflict(pr: GithubPr, config: Config, logFile: string, attempt: number) {
+export async function handleConflict(pr: GithubPr, config: Config, logFile: string, attempt: number, projectConfig?: ProjectConfig) {
   const key = `conflict:${pr.repo}#${pr.number}`
+  const shouldNotifySuccess = projectConfig?.notifyOnSuccess ?? true
+  const shouldNotifyFailure = projectConfig?.notifyOnFailure ?? true
 
   try {
     const result = await spawnConflictWorker(
@@ -19,17 +22,17 @@ export async function handleConflict(pr: GithubPr, config: Config, logFile: stri
 
     if (result.success) {
       setIssueState(key, { status: 'done', prUrl: result.prUrl, logFile: result.logFile })
-      notify(`✅ **${pr.repo}#${pr.number}** — Merge conflicts resolved and pushed`)
+      if (shouldNotifySuccess) notify(`✅ **${pr.repo}#${pr.number}** — Merge conflicts resolved and pushed`)
     } else if (result.partial) {
       setIssueState(key, { status: 'failed', error: result.error, madeProgress: true, logFile: result.logFile })
-      notify(`⏸️ **${pr.repo}#${pr.number}** — Partial conflict resolution, will retry`)
+      if (shouldNotifyFailure) notify(`⏸️ **${pr.repo}#${pr.number}** — Partial conflict resolution, will retry`)
     } else {
       setIssueState(key, { status: 'failed', error: result.error, logFile: result.logFile })
-      notify(`❌ **${pr.repo}#${pr.number}** — Conflict resolution failed (attempt ${attempt}): ${result.error}`)
+      if (shouldNotifyFailure) notify(`❌ **${pr.repo}#${pr.number}** — Conflict resolution failed (attempt ${attempt}): ${result.error}`)
     }
   } catch (err: any) {
     setIssueState(key, { status: 'failed', error: err.message, logFile })
-    notify(`❌ **${pr.repo}#${pr.number}** — Error: ${err.message}`)
+    if (shouldNotifyFailure) notify(`❌ **${pr.repo}#${pr.number}** — Error: ${err.message}`)
   }
 }
 

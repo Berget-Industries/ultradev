@@ -29,6 +29,14 @@ model Project {
   repoUrl         String           @default("") @map("repo_url")
   description     String           @default("")
   status          ProjectStatus    @default(active)
+
+  // Per-project overrides (null = inherit global setting)
+  workerTimeoutMs     Int?     @map("worker_timeout_ms")
+  defaultLabels       String?  @map("default_labels")
+  maxAttempts         Int?     @map("max_attempts")
+  notifyOnSuccess     Boolean? @map("notify_on_success")
+  notifyOnFailure     Boolean? @map("notify_on_failure")
+
   createdAt       DateTime         @default(now()) @map("created_at") @db.Timestamptz
   updatedAt       DateTime         @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
   tasks           Task[]

@@ -17,7 +17,7 @@ export function makeLogPath(config: Config, issueKey?: string): string {
   return join(config.paths.logs, `${safeName}_${Date.now()}.log`)
 }
 
-export async function spawnWorker(repo: string, prompt: string, config: Config, issueKey?: string, logFile?: string): Promise<WorkerResult> {
+export async function spawnWorker(repo: string, prompt: string, config: Config, issueKey?: string, logFile?: string, timeoutMs?: number): Promise<WorkerResult> {
   const repoBase = join(config.paths.repos, repo)
   const safeName = (issueKey || `work-${Date.now()}`).replace(/[^a-zA-Z0-9_-]/g, '_')
   const branchName = `ultradev/${safeName}`
@@ -41,7 +41,7 @@ export async function spawnWorker(repo: string, prompt: string, config: Config, 
       cwd: repoBase,
       stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
-      timeout: 30 * 60 * 1000,
+      timeout: timeoutMs || 30 * 60 * 1000,
     })
 
     let output = ''

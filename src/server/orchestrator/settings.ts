@@ -35,7 +35,6 @@ export async function loadSettingsConfig(): Promise<Config> {
       enabled: get('discord.enabled', process.env.ULTRADEV_DISCORD_ENABLED, 'true') !== 'false',
       token: get('discord.token', process.env.ULTRADEV_DISCORD_TOKEN, '') || null,
       ownerUserId: get('discord.owner_user_id', process.env.ULTRADEV_DISCORD_OWNER_USER_ID, '') || null,
-      notifyChannelId: get('discord.notify_channel_id', process.env.ULTRADEV_DISCORD_NOTIFY_CHANNEL_ID, '') || null,
       triggerWhitelist: parseTriggerWhitelist(
         get('discord.trigger_whitelist', process.env.ULTRADEV_DISCORD_TRIGGER_WHITELIST, '')
       ),

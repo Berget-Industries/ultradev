@@ -36,6 +36,7 @@ export async function spawnPrWorker(
   reviewComments: ReviewComment[],
   config: Config,
   logFile?: string,
+  timeoutMs?: number,
 ): Promise<WorkerResult> {
   const repoBase = join(config.paths.repos, repo)
 
@@ -66,7 +67,7 @@ export async function spawnPrWorker(
       cwd: repoBase,
       stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
-      timeout: 30 * 60 * 1000,
+      timeout: timeoutMs || 30 * 60 * 1000,
     })
 
     let output = ''
