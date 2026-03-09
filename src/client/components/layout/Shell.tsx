@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from 'react'
 import { NavLink, useNavigate } from 'react-router-dom'
-import { Zap, LayoutDashboard, FolderGit2, Clock, BarChart3, Settings, Maximize, Minimize, ArrowUpCircle, Loader2 } from 'lucide-react'
+import { Zap, LayoutDashboard, Clock, BarChart3, Settings, Maximize, Minimize, ArrowUpCircle, Loader2 } from 'lucide-react'
 import { AgentIndicator } from '@/components/agents/AgentIndicator'
 import { MaintenanceToggle } from '@/components/layout/MaintenanceToggle'
 import { useStore } from '@/lib/store'
@@ -9,7 +9,6 @@ import { cn } from '@/lib/utils'
 
 const navItems = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard },
-  { to: '/projects', label: 'Repos', icon: FolderGit2 },
   { to: '/crons', label: 'Crons', icon: Clock },
   { to: '/usage', label: 'Usage', icon: BarChart3 },
   { to: '/settings', label: 'Settings', icon: Settings },
