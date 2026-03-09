@@ -103,7 +103,6 @@ const SECTION_TO_CATEGORY: Partial<Record<SectionId, string>> = {
   claude: 'claude',
   logging: 'logging',
   appearance: 'appearance',
-  features: 'features',
 }
 
 // --- Toast feedback component ---
@@ -884,6 +883,119 @@ function DangerZoneSection({ onReset }: { onReset: () => void }) {
   )
 }
 
+// --- Feature Page (individual feature subpage) ---
+
+function extractTemplateVariables(template: string): string[] {
+  const matches = template.match(/\{\{(\w+)\}\}/g)
+  if (!matches) return []
+  return [...new Set(matches.map((m) => m.slice(2, -2)))]
+}
+
+function FeaturePage({
+  title,
+  description,
+  settingKey,
+  values,
+  setValues,
+  hasChanges,
+  saving,
+  onSave,
+  template,
+  onNavigateToTemplates,
+}: {
+  title: string
+  description: string
+  settingKey: string
+  values: Record<string, string>
+  setValues: React.Dispatch<React.SetStateAction<Record<string, string>>>
+  hasChanges: boolean
+  saving: boolean
+  onSave: () => void
+  template?: PromptTemplate
+  onNavigateToTemplates?: () => void
+}) {
+  const enabled = values[settingKey] === 'true'
+  const variables = template ? extractTemplateVariables(template.template) : []
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-semibold">{title}</h2>
+        <Button onClick={onSave} disabled={saving || !hasChanges} size="sm">
+          <Save className="h-4 w-4" />
+          {saving ? 'Saving...' : 'Save'}
+        </Button>
+      </div>
+
+      <div className="flex items-center justify-between gap-4">
+        <div className="min-w-0">
+          <div className="text-sm font-medium">Enabled</div>
+          <div className="text-xs text-muted-foreground">{description}</div>
+        </div>
+        <div className="shrink-0">
+          <Switch
+            checked={enabled}
+            onCheckedChange={(checked) =>
+              setValues((prev) => ({ ...prev, [settingKey]: String(checked) }))
+            }
+          />
+        </div>
+      </div>
+
+      <div className="border-t border-zinc-800 pt-4">
+        <h3 className="text-sm font-medium text-muted-foreground">Prompt Template</h3>
+        {template ? (
+          <Card className="mt-3">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm">{template.name}</CardTitle>
+              {template.description && (
+                <p className="text-xs text-muted-foreground">{template.description}</p>
+              )}
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <Textarea
+                value={template.template}
+                readOnly
+                rows={10}
+                className="font-mono text-xs bg-zinc-900 resize-none"
+              />
+              {onNavigateToTemplates && (
+                <p className="text-xs text-muted-foreground">
+                  Edit this template in the{' '}
+                  <button type="button" className="underline hover:text-zinc-300" onClick={onNavigateToTemplates}>
+                    Templates
+                  </button>{' '}
+                  section.
+                </p>
+              )}
+
+              <div className="flex gap-4 text-xs text-muted-foreground">
+                <span>Max attempts: <strong className="text-zinc-300">{template.max_attempts}</strong></span>
+                <span>Timeout: <strong className="text-zinc-300">{template.timeout_ms}ms</strong></span>
+              </div>
+
+              {variables.length > 0 && (
+                <div>
+                  <div className="text-xs font-medium text-muted-foreground mb-1.5">Variables</div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {variables.map((v) => (
+                      <Badge key={v} variant="secondary" className="font-mono text-xs">
+                        {`{{${v}}}`}
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        ) : (
+          <p className="text-xs text-muted-foreground mt-1">No associated template found.</p>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // --- Main Page ---
 
 export default function SettingsPage() {
@@ -1048,6 +1160,35 @@ export default function SettingsPage() {
       )
     }
 
+    // Feature subpages
+    const featurePages: Record<string, { title: string; settingKey: string; description: string; templateSlug?: string }> = {
+      'feat-pr-review': { title: 'Auto PR Review', settingKey: 'features.auto_pr_review', description: 'Automatically address PR review feedback using Claude', templateSlug: 'pr-review' },
+      'feat-self-heal': { title: 'Self Heal', settingKey: 'features.self_heal', description: 'Auto-fix system errors when detected', templateSlug: 'self-heal' },
+      'feat-cron': { title: 'Cron Scheduler', settingKey: 'features.cron_scheduler', description: 'Enable the cron job scheduler' },
+      'feat-auto-merge': { title: 'Auto Merge', settingKey: 'features.auto_merge', description: 'Auto-merge PRs after all checks pass and approval received' },
+    }
+
+    const featureDef = featurePages[activeSection]
+    if (featureDef) {
+      const featureTemplate = featureDef.templateSlug
+        ? templates?.find((t) => t.slug === featureDef.templateSlug)
+        : undefined
+      return (
+        <FeaturePage
+          title={featureDef.title}
+          description={featureDef.description}
+          settingKey={featureDef.settingKey}
+          values={values}
+          setValues={setValues}
+          hasChanges={hasChanges}
+          saving={saving}
+          onSave={handleSave}
+          template={featureTemplate}
+          onNavigateToTemplates={featureTemplate ? () => setActiveSection('templates') : undefined}
+        />
+      )
+    }
+
     switch (activeSection) {
       case 'general':
         return systemInfo ? <SystemInfoSection info={systemInfo} /> : (
@@ -1081,12 +1222,184 @@ export default function SettingsPage() {
             />
           </div>
         )
-      case 'templates':
-        return <PromptTemplatesSection templates={templates} onSaved={refreshTemplates} />
+      case 'templates': {
+        // Filter out templates already shown on their feature pages
+        const featureTemplateSlugs = new Set(['pr-review', 'self-heal', 'error-triage'])
+        const otherTemplates = templates.filter(t => !featureTemplateSlugs.has(t.slug))
+        return <PromptTemplatesSection templates={otherTemplates} onSaved={refreshTemplates} />
+      }
       case 'backup':
         return <ImportExportSection onImported={refreshAll} />
       case 'danger':
         return <DangerZoneSection onReset={refreshAll} />
+
+      case 'feat-error-watcher': {
+        // Collect error_watcher.* entries from the worker category
+        const workerEntries = settings['worker'] ?? []
+        const ewEntries = workerEntries.filter(e => e.key.startsWith('error_watcher.'))
+        const enabledEntry = ewEntries.find(e => e.key === 'error_watcher.enabled')
+        const otherEntries = ewEntries.filter(e => e.key !== 'error_watcher.enabled')
+
+        // Keys whose values are in milliseconds — display in seconds
+        const ewMsKeys = new Set(['error_watcher.interval_ms'])
+        // Keys whose values are comma-separated lists
+        const ewCommaKeys = new Set(['error_watcher.labels'])
+
+        const renderEwInput = (entry: SettingEntry) => {
+          const val = values[entry.key] ?? ''
+          switch (entry.type) {
+            case 'boolean':
+              return (
+                <Switch
+                  checked={val === 'true'}
+                  onCheckedChange={(checked) =>
+                    setValues((prev) => ({ ...prev, [entry.key]: String(checked) }))
+                  }
+                />
+              )
+            case 'number':
+              if (ewMsKeys.has(entry.key)) {
+                const displayVal = val !== '' ? String(Math.round(Number(val) / 1000)) : ''
+                return (
+                  <div className="flex items-center gap-2">
+                    <Input
+                      type="number"
+                      value={displayVal}
+                      onChange={(e) => {
+                        const seconds = e.target.value
+                        const ms = seconds !== '' ? String(Number(seconds) * 1000) : ''
+                        setValues((prev) => ({ ...prev, [entry.key]: ms }))
+                      }}
+                      className="w-full"
+                    />
+                    <span className="text-xs text-muted-foreground shrink-0">seconds</span>
+                  </div>
+                )
+              }
+              return (
+                <Input
+                  type="number"
+                  value={val}
+                  onChange={(e) => setValues((prev) => ({ ...prev, [entry.key]: e.target.value }))}
+                  className="w-full"
+                />
+              )
+            default:
+              if (ewCommaKeys.has(entry.key)) {
+                return (
+                  <Textarea
+                    value={val}
+                    onChange={(e) => setValues((prev) => ({ ...prev, [entry.key]: e.target.value }))}
+                    placeholder="One per line or comma-separated"
+                    rows={2}
+                    className="w-full font-mono text-xs"
+                  />
+                )
+              }
+              return (
+                <Input
+                  type="text"
+                  value={val}
+                  onChange={(e) => setValues((prev) => ({ ...prev, [entry.key]: e.target.value }))}
+                  className="w-full"
+                />
+              )
+          }
+        }
+
+        const triageTemplate = templates.find(t => t.slug === 'error-triage')
+        const triageVars = triageTemplate ? extractTemplateVariables(triageTemplate.template) : []
+
+        return (
+          <div className="space-y-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-semibold">Error Watcher</h2>
+                <p className="text-sm text-muted-foreground">
+                  Monitor Discord channels for errors and create triaged GitHub issues
+                </p>
+              </div>
+              <Button onClick={handleSave} disabled={saving || !hasChanges} size="sm">
+                <Save className="h-4 w-4" />
+                {saving ? 'Saving...' : 'Save'}
+              </Button>
+            </div>
+
+            {/* Enabled toggle */}
+            {enabledEntry && (
+              <div className="flex items-center justify-between gap-4">
+                <div className="min-w-0">
+                  <div className="text-sm font-medium">{enabledEntry.label}</div>
+                  <div className="text-xs text-muted-foreground">{enabledEntry.description}</div>
+                </div>
+                <div className="shrink-0">{renderEwInput(enabledEntry)}</div>
+              </div>
+            )}
+
+            {/* Other error_watcher worker settings */}
+            {otherEntries.length > 0 && (
+              <div className="space-y-5">
+                {otherEntries.map((entry) => (
+                  <div key={entry.key} className={entry.type === 'boolean'
+                    ? 'flex items-center justify-between gap-4'
+                    : 'space-y-1.5'
+                  }>
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium">{entry.label}</div>
+                      <div className="text-xs text-muted-foreground">{entry.description}</div>
+                    </div>
+                    <div className={entry.type === 'boolean' ? 'shrink-0' : 'max-w-md'}>{renderEwInput(entry)}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* error-triage prompt template */}
+            <div className="border-t border-zinc-800 pt-4">
+              <h3 className="text-sm font-medium text-muted-foreground">Prompt Template</h3>
+              {triageTemplate ? (
+                <Card className="mt-3">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm">{triageTemplate.name}</CardTitle>
+                    {triageTemplate.description && (
+                      <p className="text-xs text-muted-foreground">{triageTemplate.description}</p>
+                    )}
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <Textarea
+                      value={triageTemplate.template}
+                      readOnly
+                      rows={10}
+                      className="font-mono text-xs bg-zinc-900 resize-none"
+                    />
+
+                    <div className="flex gap-4 text-xs text-muted-foreground">
+                      <span>Max attempts: <strong className="text-zinc-300">{triageTemplate.max_attempts}</strong></span>
+                      <span>Timeout: <strong className="text-zinc-300">{triageTemplate.timeout_ms}ms</strong></span>
+                    </div>
+
+                    {triageVars.length > 0 && (
+                      <div>
+                        <div className="text-xs font-medium text-muted-foreground mb-1.5">Variables</div>
+                        <div className="flex flex-wrap gap-1.5">
+                          {triageVars.map((v) => (
+                            <Badge key={v} variant="secondary" className="font-mono text-xs">
+                              {`{{${v}}}`}
+                            </Badge>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              ) : (
+                <p className="text-xs text-muted-foreground mt-1">No associated template found.</p>
+              )}
+            </div>
+          </div>
+        )
+      }
+
       default:
         return null
     }
