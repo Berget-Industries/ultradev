@@ -1,5 +1,11 @@
 # ultradev-dashboard
 
+## 1.4.1
+
+### Patch Changes
+
+- [#30](https://github.com/Berget-Industries/ultradev/pull/30) [`64e8f4f`](https://github.com/Berget-Industries/ultradev/commit/64e8f4f4c3b9aa222cb0ad7bd64a5b62f40eec15) Thanks [@willebergh](https://github.com/willebergh)! - Fix update process to run database migrations and seed after installing dependencies. Fix Prisma 7 config to use `datasource.url` instead of `migrate.url`, and fix seed script to use the PrismaPg adapter pattern.
+
 ## 1.4.0
 
 ### Minor Changes
