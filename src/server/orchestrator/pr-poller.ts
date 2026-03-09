@@ -96,10 +96,7 @@ export async function handlePrReview(repo: string, prSummary: PrSummary, config:
     const isRetry = attempt > 1
 
     console.log(`[pr-poller] ${isRetry ? 'Retrying' : 'New'} PR changes requested: ${repo}#${prNum} (attempt ${attempt})`)
-    notify(isRetry
-      ? `🔄 Retrying PR fix **${repo}#${prNum}** (attempt ${attempt}/${MAX_ATTEMPTS})...`
-      : `🔍 Picked up changes requested: **${repo}#${prNum}** — ${pr.title}`
-    )
+    // Note: dispatch already sends the "picked up" notification — don't duplicate here
 
     const logFile = makeLogPath(config, key)
     setIssueState(key, { status: 'in_progress', attempts: attempt, repo, number: prNum, type: 'pr', logFile })

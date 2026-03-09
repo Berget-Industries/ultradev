@@ -45,25 +45,18 @@ router.get('/', async (_req, res) => {
 
 router.post('/update', async (_req, res) => {
   try {
-    // Fetch latest tags
-    await execFileAsync('git', ['fetch', '--tags'], { timeout: 30_000, encoding: 'utf-8' })
-
-    // Get latest tag
-    const { stdout: revOut } = await execFileAsync('git', [
-      'rev-list', '--tags', '--max-count=1',
-    ], { timeout: 10_000, encoding: 'utf-8' })
-
-    const { stdout: tagOut } = await execFileAsync('git', [
-      'describe', '--tags', '--abbrev=0', revOut.trim(),
-    ], { timeout: 10_000, encoding: 'utf-8' })
-
-    const latestTag = tagOut.trim()
+    // Get latest release tag from GitHub Releases (same source as detection)
+    cachedLatest = null
+    const latestTag = await getLatestRelease()
     if (!latestTag) {
       res.status(404).json({ error: 'No release tags found' })
       return
     }
 
-    // Checkout latest tag
+    // Fetch tags so the release tag is available locally
+    await execFileAsync('git', ['fetch', '--tags'], { timeout: 30_000, encoding: 'utf-8' })
+
+    // Checkout latest release tag
     await execFileAsync('git', ['checkout', latestTag], { timeout: 10_000, encoding: 'utf-8' })
 
     // Install dependencies

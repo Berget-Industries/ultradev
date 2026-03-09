@@ -1,7 +1,8 @@
 {
   "name": "ultradev-dashboard",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
+  "packageManager": "pnpm@10.18.0",
   "type": "module",
   "scripts": {
     "dev": "tsx src/server/index.ts",

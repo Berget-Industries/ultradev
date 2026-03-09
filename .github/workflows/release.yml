@@ -39,7 +39,7 @@ jobs:
           commit: "chore: version packages"
           version: pnpm changeset version
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
 
       - name: Create GitHub Release
         if: steps.changesets.outputs.hasChangesets == 'false' && steps.changesets.outputs.published == 'false'
@@ -47,22 +47,23 @@ jobs:
           VERSION=$(node -p "require('./package.json').version")
           TAG="v${VERSION}"
 
-          # Check if tag already exists
-          if git rev-parse "$TAG" >/dev/null 2>&1; then
-            echo "Tag $TAG already exists, skipping release"
+          # Check if release already exists (not just the tag)
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists, skipping"
             exit 0
           fi
 
-          # Create tag and release
-          git tag "$TAG"
-          git push origin "$TAG"
+          # Create tag if it doesn't exist yet
+          if ! git rev-parse "$TAG" >/dev/null 2>&1; then
+            git tag "$TAG"
+            git push origin "$TAG"
+          fi
 
           # Extract latest changelog entry for release notes
           NOTES=$(sed -n '/^## /,/^## /{ /^## /!p; }' CHANGELOG.md 2>/dev/null | head -50 || echo "Release ${TAG}")
 
           gh release create "$TAG" \
             --title "$TAG" \
-            --notes "${NOTES:-Release ${TAG}}" \
-            --target main
+            --notes "${NOTES:-Release ${TAG}}"
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
