@@ -20,6 +20,7 @@ export async function spawnConflictWorker(
   baseRefName: string,
   config: Config,
   logFile?: string,
+  timeoutMs?: number,
 ): Promise<WorkerResult> {
   const repoBase = join(config.paths.repos, repo)
 
@@ -48,7 +49,7 @@ export async function spawnConflictWorker(
       cwd: repoBase,
       stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
-      timeout: 15 * 60 * 1000, // 15 min — conflicts should be quicker
+      timeout: timeoutMs || 15 * 60 * 1000, // 15 min — conflicts should be quicker
     })
 
     let output = ''

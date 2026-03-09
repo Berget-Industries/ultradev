@@ -5,7 +5,7 @@
  */
 import { execFileSync } from 'child_process'
 import { existsSync } from 'fs'
-import { loadConfig } from './config.js'
+import { loadConfig, type Config } from './config.js'
 import { MAINTENANCE_FILE } from '../paths.js'
 import { logActivity } from './activity-log.js'
 import { isRateLimited, handleRateLimitEvent } from './rate-limit.js'
@@ -19,7 +19,8 @@ import { handleIssue } from './github-poller.js'
 import { handlePrReview, cleanStalePrStates } from './pr-poller.js'
 import { handleConflict } from './conflict-poller.js'
 import { prisma } from '../prisma.js'
-import type { GithubIssue, GithubPr } from '@prisma/client'
+import { resolveProjectConfig, type ProjectConfig } from '../lib/project-config.js'
+import type { GithubIssue, GithubPr, Project } from '@prisma/client'
 
 let intervalId: ReturnType<typeof setInterval> | null = null
 let lastSyncTime: number | null = null
@@ -327,6 +328,18 @@ const MAX_PR_ATTEMPTS = 3
 const MAX_CONFLICT_ATTEMPTS = 2
 const MAX_CI_FIX_ATTEMPTS = 2
 
+/** Look up the Project for an owner/repo string and resolve per-project config. */
+async function getProjectConfig(repo: string, config: Config): Promise<{ project: Project | null; pc: ProjectConfig | null }> {
+  const project = await prisma.project.findFirst({
+    where: {
+      status: 'active',
+      repoUrl: { endsWith: repo },
+    },
+  })
+  if (!project) return { project: null, pc: null }
+  return { project, pc: resolveProjectConfig(project, config) }
+}
+
 async function dispatch() {
   if (existsSync(MAINTENANCE_FILE)) {
     console.log('[dispatch] Maintenance mode — skipping')
@@ -353,6 +366,9 @@ async function dispatch() {
     for (const pr of changesRequestedPrs) {
       if (!(await isRepoAllowed(pr.repo))) continue
 
+      const { pc: prPc } = await getProjectConfig(pr.repo, config)
+      const maxPrAttempts = prPc?.maxAttempts ?? MAX_PR_ATTEMPTS
+
       const key = `pr:${pr.repo}#${pr.number}`
       let state = getIssueState(key)
 
@@ -371,9 +387,9 @@ async function dispatch() {
         }
         continue
       }
-      if ((state?.attempts || 0) >= MAX_PR_ATTEMPTS) {
+      if ((state?.attempts || 0) >= maxPrAttempts) {
         if (!state?.notifiedMaxRetries) {
-          notify(`⚠️ **${key}** — Gave up after ${MAX_PR_ATTEMPTS} attempts on PR review. Needs human help.`)
+          notify(`⚠️ **${key}** — Gave up after ${maxPrAttempts} attempts on PR review. Needs human help.`)
           setIssueState(key, { notifiedMaxRetries: true })
         }
         continue
@@ -393,11 +409,11 @@ async function dispatch() {
       console.log(`[dispatch] Picked: ${key} (reason: changes_requested, priority: highest)`)
       logActivity('dispatch', `Picked: ${key} (changes_requested)`)
       notify(isRetry
-        ? `🔄 Retrying PR fix **${pr.repo}#${pr.number}** (attempt ${attempt}/${MAX_PR_ATTEMPTS})...`
+        ? `🔄 Retrying PR fix **${pr.repo}#${pr.number}** (attempt ${attempt}/${maxPrAttempts})...`
         : `🔍 Picked up changes requested: **${pr.repo}#${pr.number}** — ${pr.title}`
       )
 
-      handlePrReview(pr.repo, prSummary, config, state)
+      handlePrReview(pr.repo, prSummary, config, state, prPc ?? undefined)
       lastDispatchTime = Date.now()
       dispatchStatus = 'idle'
       return
@@ -407,6 +423,9 @@ async function dispatch() {
     const conflictPrs = await getConflictingPrs(username)
     for (const pr of conflictPrs) {
       if (!(await isRepoAllowed(pr.repo))) continue
+
+      const { pc: conflictPc } = await getProjectConfig(pr.repo, config)
+      const maxConflictAttempts = conflictPc?.maxAttempts ?? MAX_CONFLICT_ATTEMPTS
 
       const key = `conflict:${pr.repo}#${pr.number}`
       const state = getIssueState(key)
@@ -418,9 +437,9 @@ async function dispatch() {
         }
         continue
       }
-      if ((state?.attempts || 0) >= MAX_CONFLICT_ATTEMPTS) {
+      if ((state?.attempts || 0) >= maxConflictAttempts) {
         if (!state?.notifiedMaxRetries) {
-          notify(`⚠️ **${key}** — Could not resolve merge conflicts after ${MAX_CONFLICT_ATTEMPTS} attempts. Needs human help.`)
+          notify(`⚠️ **${key}** — Could not resolve merge conflicts after ${maxConflictAttempts} attempts. Needs human help.`)
           setIssueState(key, { notifiedMaxRetries: true })
         }
         continue
@@ -443,7 +462,7 @@ async function dispatch() {
         logFile,
       })
 
-      handleConflict(pr, config, logFile, attempt)
+      handleConflict(pr, config, logFile, attempt, conflictPc ?? undefined)
         .finally(() => releaseWorkerSlot())
       lastDispatchTime = Date.now()
       dispatchStatus = 'idle'
@@ -471,9 +490,13 @@ async function dispatch() {
       const repo = issue.repository.nameWithOwner
       if (!(await isRepoAllowed(repo))) continue
 
+      const { pc: issuePc } = await getProjectConfig(repo, config)
+      const baseMaxAttempts = issuePc?.maxAttempts ?? MAX_ISSUE_ATTEMPTS
+      const maxAttempts = baseMaxAttempts + MAX_CI_FIX_ATTEMPTS
+
       if (state?.status === 'done') {
         const failingPrs = await getFailingPrsForIssue(username, repo, issue.number)
-        if (failingPrs.length > 0 && (state.attempts || 0) < MAX_ISSUE_ATTEMPTS + MAX_CI_FIX_ATTEMPTS) {
+        if (failingPrs.length > 0 && (state.attempts || 0) < maxAttempts) {
           const prNums = failingPrs.map(p => `#${p.number}`).join(', ')
           console.log(`[dispatch] ${key} marked done but PR ${prNums} has CI failures — re-queuing`)
           logActivity('dispatch', `Re-queuing ${key}: linked PR CI failing`)
@@ -495,7 +518,6 @@ async function dispatch() {
         }
         continue
       }
-      const maxAttempts = MAX_ISSUE_ATTEMPTS + MAX_CI_FIX_ATTEMPTS
       if ((state?.attempts || 0) >= maxAttempts) {
         if (!state?.notifiedMaxRetries) {
           notify(`⚠️ **${key}** — Gave up after ${maxAttempts} attempts (incl. CI fixes). Needs human help.`)
@@ -517,7 +539,7 @@ async function dispatch() {
         : `🔍 Picked up: **${key}** — ${issue.title}`
       )
 
-      handleIssue(issue, config, attempt)
+      handleIssue(issue, config, attempt, issuePc ?? undefined)
       lastDispatchTime = Date.now()
       dispatchStatus = 'idle'
       return

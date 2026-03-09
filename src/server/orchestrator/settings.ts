@@ -30,13 +30,11 @@ export async function loadSettingsConfig(): Promise<Config> {
       pollIntervalMs: safeParseInt(get('github.poll_interval_ms', process.env.ULTRADEV_POLL_INTERVAL_MS, '120000'), 120000),
       autoAssign: get('github.auto_assign', process.env.ULTRADEV_GITHUB_AUTO_ASSIGN, 'false') === 'true',
       defaultLabels: splitCsv(get('github.default_labels', process.env.ULTRADEV_GITHUB_DEFAULT_LABELS, '')),
-      reposWhitelist: splitCsv(get('github.repos_whitelist', process.env.ULTRADEV_GITHUB_REPOS_WHITELIST, '')),
     },
     discord: {
       enabled: get('discord.enabled', process.env.ULTRADEV_DISCORD_ENABLED, 'true') !== 'false',
       token: get('discord.token', process.env.ULTRADEV_DISCORD_TOKEN, '') || null,
       ownerUserId: get('discord.owner_user_id', process.env.ULTRADEV_DISCORD_OWNER_USER_ID, '') || null,
-      notifyChannelId: get('discord.notify_channel_id', process.env.ULTRADEV_DISCORD_NOTIFY_CHANNEL_ID, '') || null,
       triggerWhitelist: parseTriggerWhitelist(
         get('discord.trigger_whitelist', process.env.ULTRADEV_DISCORD_TRIGGER_WHITELIST, '')
       ),
@@ -52,9 +50,9 @@ export async function loadSettingsConfig(): Promise<Config> {
       defaultTimeoutMs: safeParseInt(get('worker.default_timeout_ms', process.env.ULTRADEV_WORKER_DEFAULT_TIMEOUT_MS, '1800000'), 1800000),
     },
     notifications: {
-      enabled: get('notifications.enabled', process.env.ULTRADEV_NOTIFICATIONS_ENABLED, 'true') !== 'false',
-      discordOnSuccess: get('notifications.discord_on_success', process.env.ULTRADEV_NOTIFICATIONS_DISCORD_ON_SUCCESS, 'true') !== 'false',
-      discordOnFailure: get('notifications.discord_on_failure', process.env.ULTRADEV_NOTIFICATIONS_DISCORD_ON_FAILURE, 'true') !== 'false',
+      enabled: get('discord.notifications_enabled', process.env.ULTRADEV_NOTIFICATIONS_ENABLED, 'true') !== 'false',
+      discordOnSuccess: get('discord.notify_on_success', process.env.ULTRADEV_NOTIFICATIONS_DISCORD_ON_SUCCESS, 'true') !== 'false',
+      discordOnFailure: get('discord.notify_on_failure', process.env.ULTRADEV_NOTIFICATIONS_DISCORD_ON_FAILURE, 'true') !== 'false',
     },
     paths: {
       repos: expandTilde(get('paths.repos', process.env.ULTRADEV_REPOS_DIR, join(HOME, 'ultradev', 'repos'))),

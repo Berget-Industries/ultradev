@@ -6,6 +6,7 @@ import { releaseWorkerSlot } from './worker-lock.js'
 import { getPromptTemplate } from './prompt-loader.js'
 import { renderTemplate } from '../lib/template.js'
 import type { Config } from './config.js'
+import type { ProjectConfig } from '../lib/project-config.js'
 
 interface IssueSummary {
   repository: { nameWithOwner: string }
@@ -13,7 +14,7 @@ interface IssueSummary {
   title: string
 }
 
-export async function handleIssue(issue: IssueSummary, config: Config, attempt: number) {
+export async function handleIssue(issue: IssueSummary, config: Config, attempt: number, projectConfig?: ProjectConfig) {
   const repo = issue.repository.nameWithOwner
   const num = issue.number
   const key = `${repo}#${num}`
@@ -34,22 +35,25 @@ export async function handleIssue(issue: IssueSummary, config: Config, attempt: 
     const prompt = await buildPrompt(repo, num, detail, existingPrUrl)
 
     notify(`⚙️ Working on **${key}** (attempt ${attempt})...`)
-    const result = await spawnWorker(repo, prompt, config, key, logFile)
+    const result = await spawnWorker(repo, prompt, config, key, logFile, projectConfig?.workerTimeoutMs)
+
+    const shouldNotifySuccess = projectConfig?.notifyOnSuccess ?? true
+    const shouldNotifyFailure = projectConfig?.notifyOnFailure ?? true
 
     if (result.success && result.prUrl) {
       const existingUrls = getIssueState(key)?.prUrls || []
       const prUrls = existingUrls.includes(result.prUrl) ? existingUrls : [...existingUrls, result.prUrl]
       setIssueState(key, { status: 'done', prUrl: result.prUrl, prUrls, logFile: result.logFile })
-      notify(`✅ **${key}** — PR created: ${result.prUrl}`)
+      if (shouldNotifySuccess) notify(`✅ **${key}** — PR created: ${result.prUrl}`)
     } else if (result.success) {
       setIssueState(key, { status: 'done', prUrl: null, logFile: result.logFile })
-      notify(`✅ **${key}** — Completed (no PR URL captured).`)
+      if (shouldNotifySuccess) notify(`✅ **${key}** — Completed (no PR URL captured).`)
     } else if (result.partial) {
       setIssueState(key, { status: 'failed', error: result.error, madeProgress: true, logFile: result.logFile })
-      notify(`⏸️ **${key}** — Partial progress, will retry. (${result.error})`)
+      if (shouldNotifyFailure) notify(`⏸️ **${key}** — Partial progress, will retry. (${result.error})`)
     } else {
       setIssueState(key, { status: 'failed', error: result.error, logFile: result.logFile })
-      notify(`❌ **${key}** — Failed (attempt ${attempt}): ${result.error}`)
+      if (shouldNotifyFailure) notify(`❌ **${key}** — Failed (attempt ${attempt}): ${result.error}`)
     }
   } catch (err: any) {
     console.error(`[poller] Error handling ${key}:`, err.message)

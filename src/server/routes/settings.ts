@@ -280,7 +280,7 @@ router.post('/test-connection', async (req, res) => {
   switch (service) {
     case 'github': {
       try {
-        const { stdout } = await execFileAsync('gh', ['auth', 'status', '--active'], {
+        const { stdout } = await execFileAsync('gh', ['auth', 'status'], {
           timeout: 10_000,
           encoding: 'utf-8',
         })

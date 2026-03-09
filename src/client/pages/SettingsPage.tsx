@@ -1,19 +1,25 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import {
-  Settings, FileText, Save, Eye, EyeOff, ChevronDown, ChevronRight,
+  Settings, FileText, Save, Eye, EyeOff, Plus, FolderGit2,
   Check, AlertCircle, Server, Download, Upload, RotateCcw, Trash2,
-  Zap, Database, RefreshCw,
+  Zap, Database, RefreshCw, Github, MessageSquare, Cpu,
+  FolderOpen, Terminal, ScrollText, Palette,
+  GitPullRequest, GitMerge, AlertTriangle, Wrench, Clock,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Select } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { SettingsSkeleton } from '@/components/skeletons/SettingsSkeleton'
+import { ProjectList } from '@/components/projects/ProjectList'
+import { ProjectForm, type Project, type CronjobOption } from '@/components/projects/ProjectForm'
 import { api } from '@/lib/api'
 import { useStore } from '@/lib/store'
+import { cn } from '@/lib/utils'
 
 // --- Types ---
 
@@ -52,6 +58,52 @@ interface SystemInfo {
 }
 
 type SettingsMap = Record<string, SettingEntry[]>
+
+// --- Sidebar nav definition ---
+
+type SectionId =
+  | 'general' | 'github' | 'discord' | 'worker'
+  | 'paths' | 'claude' | 'logging' | 'appearance'
+  | 'feat-pr-review' | 'feat-self-heal' | 'feat-cron' | 'feat-auto-merge' | 'feat-error-watcher'
+  | 'projects' | 'templates' | 'backup' | 'danger'
+
+interface NavItem {
+  id: SectionId
+  label: string
+  icon: React.ComponentType<{ className?: string }>
+  separator?: 'before'
+}
+
+const NAV_ITEMS: NavItem[] = [
+  { id: 'general', label: 'General', icon: Server },
+  { id: 'github', label: 'GitHub', icon: Github },
+  { id: 'discord', label: 'Discord', icon: MessageSquare },
+  { id: 'worker', label: 'Worker', icon: Cpu },
+  { id: 'paths', label: 'Paths', icon: FolderOpen },
+  { id: 'claude', label: 'Claude', icon: Terminal },
+  { id: 'logging', label: 'Logging', icon: ScrollText },
+  { id: 'appearance', label: 'Appearance', icon: Palette },
+  { id: 'feat-pr-review', label: 'PR Review', icon: GitPullRequest, separator: 'before' },
+  { id: 'feat-self-heal', label: 'Self Heal', icon: Wrench },
+  { id: 'feat-error-watcher', label: 'Error Watcher', icon: AlertTriangle },
+  { id: 'feat-cron', label: 'Cron Scheduler', icon: Clock },
+  { id: 'feat-auto-merge', label: 'Auto Merge', icon: GitMerge },
+  { id: 'projects', label: 'Projects', icon: FolderGit2, separator: 'before' },
+  { id: 'templates', label: 'Templates', icon: FileText },
+  { id: 'backup', label: 'Backup', icon: Database },
+  { id: 'danger', label: 'Danger Zone', icon: AlertCircle, separator: 'before' },
+]
+
+// Map section IDs to settings category names (for config sections)
+const SECTION_TO_CATEGORY: Partial<Record<SectionId, string>> = {
+  github: 'github',
+  discord: 'discord',
+  worker: 'worker',
+  paths: 'paths',
+  claude: 'claude',
+  logging: 'logging',
+  appearance: 'appearance',
+}
 
 // --- Toast feedback component ---
 
@@ -206,109 +258,68 @@ function SystemInfoSection({ info }: { info: SystemInfo }) {
   )
 }
 
-// --- Configuration Section ---
+// --- Category Configuration Section (single category) ---
 
-function ConfigurationSection({
-  settings,
-  onSaved,
+function CategorySection({
+  category,
+  entries,
+  values,
+  setValues,
+  visibleSecrets,
+  toggleSecretVisibility,
+  hasChanges,
+  saving,
+  onSave,
 }: {
-  settings: SettingsMap
-  onSaved: () => void
+  category: string
+  entries: SettingEntry[]
+  values: Record<string, string>
+  setValues: React.Dispatch<React.SetStateAction<Record<string, string>>>
+  visibleSecrets: Set<string>
+  toggleSecretVisibility: (key: string) => void
+  hasChanges: boolean
+  saving: boolean
+  onSave: () => void
 }) {
-  const [values, setValues] = useState<Record<string, string>>(() => {
-    const initial: Record<string, string> = {}
-    for (const entries of Object.values(settings)) {
-      for (const entry of entries) {
-        // Don't copy masked secret values into the form — use empty string instead
-        initial[entry.key] = entry.type === 'secret' ? '' : entry.value
-      }
-    }
-    return initial
-  })
-  const [visibleSecrets, setVisibleSecrets] = useState<Set<string>>(new Set())
-  const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(new Set())
-  const [saving, setSaving] = useState(false)
-  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null)
+  // Keys whose values are stored in milliseconds — display in seconds
+  const msKeys = new Set([
+    'github.poll_interval_ms',
+    'error_watcher.interval_ms',
+    'worker.default_timeout_ms',
+  ])
 
-  // Re-sync form values when settings refresh (e.g. after save)
-  useEffect(() => {
-    const updated: Record<string, string> = {}
-    for (const entries of Object.values(settings)) {
-      for (const entry of entries) {
-        updated[entry.key] = entry.type === 'secret' ? '' : entry.value
-      }
-    }
-    setValues(updated)
-  }, [settings])
+  // Keys whose values are comma-separated lists — render as textarea
+  const commaListKeys = new Set([
+    'github.default_labels',
+    'discord.trigger_whitelist',
+    'error_watcher.labels',
+    'claude.flags',
+  ])
 
-  const categories = Object.keys(settings)
-
-  const hasChanges = useMemo(() => {
-    for (const entries of Object.values(settings)) {
-      for (const entry of entries) {
-        // Skip secrets that haven't been touched (empty = unchanged)
-        if (entry.type === 'secret' && values[entry.key] === '') continue
-        if (values[entry.key] !== entry.value) return true
-      }
-    }
-    return false
-  }, [settings, values])
-
-  const toggleCategory = (cat: string) => {
-    setCollapsedCategories((prev) => {
-      const next = new Set(prev)
-      if (next.has(cat)) next.delete(cat)
-      else next.add(cat)
-      return next
-    })
-  }
-
-  const toggleSecretVisibility = (key: string) => {
-    setVisibleSecrets((prev) => {
-      const next = new Set(prev)
-      if (next.has(key)) next.delete(key)
-      else next.add(key)
-      return next
-    })
-  }
-
-  const handleSave = async () => {
-    setSaving(true)
-    setToast(null)
-    try {
-      // Build payload: only changed values, skip untouched secrets
-      const payload: Record<string, string> = {}
-      for (const entries of Object.values(settings)) {
-        for (const entry of entries) {
-          if (entry.type === 'secret' && values[entry.key] === '') continue
-          if (values[entry.key] !== entry.value) {
-            payload[entry.key] = values[entry.key]
-          }
-        }
-      }
-      await api.put('/settings', payload)
-      // Reset saved secrets to empty so hasChanges recalculates correctly
-      const savedSecretKeys = Object.values(settings).flat().filter(e => e.type === 'secret' && payload[e.key] !== undefined).map(e => e.key)
-      if (savedSecretKeys.length > 0) {
-        setValues((prev) => {
-          const next = { ...prev }
-          for (const key of savedSecretKeys) next[key] = ''
-          return next
-        })
-      }
-      setToast({ message: 'Settings saved successfully', type: 'success' })
-      onSaved()
-      setTimeout(() => setToast(null), 3000)
-    } catch (err) {
-      setToast({ message: err instanceof Error ? err.message : 'Failed to save settings', type: 'error' })
-      setTimeout(() => setToast(null), 5000)
-    } finally {
-      setSaving(false)
-    }
+  // Keys that render as a dropdown select with predefined options
+  const selectKeys: Record<string, string[]> = {
+    'ui.theme': ['dark', 'light', 'system'],
   }
 
   const renderInput = (entry: SettingEntry) => {
     const val = values[entry.key] ?? ''
+
+    // Dropdown select for keys with predefined options
+    if (selectKeys[entry.key]) {
+      return (
+        <Select
+          value={val}
+          onChange={(e) => setValues((prev) => ({ ...prev, [entry.key]: e.target.value }))}
+          className="w-full"
+        >
+          {selectKeys[entry.key].map((option) => (
+            <option key={option} value={option}>
+              {option.charAt(0).toUpperCase() + option.slice(1)}
+            </option>
+          ))}
+        </Select>
+      )
+    }
 
     switch (entry.type) {
       case 'boolean':
@@ -321,12 +332,30 @@ function ConfigurationSection({
           />
         )
       case 'number':
+        if (msKeys.has(entry.key)) {
+          const displayVal = val !== '' ? String(Math.round(Number(val) / 1000)) : ''
+          return (
+            <div className="flex items-center gap-2">
+              <Input
+                type="number"
+                value={displayVal}
+                onChange={(e) => {
+                  const seconds = e.target.value
+                  const ms = seconds !== '' ? String(Number(seconds) * 1000) : ''
+                  setValues((prev) => ({ ...prev, [entry.key]: ms }))
+                }}
+                className="w-full"
+              />
+              <span className="text-xs text-muted-foreground shrink-0">seconds</span>
+            </div>
+          )
+        }
         return (
           <Input
             type="number"
             value={val}
             onChange={(e) => setValues((prev) => ({ ...prev, [entry.key]: e.target.value }))}
-            className="w-48"
+            className="w-full"
           />
         )
       case 'secret':
@@ -335,8 +364,9 @@ function ConfigurationSection({
             <Input
               type={visibleSecrets.has(entry.key) ? 'text' : 'password'}
               value={val}
+              placeholder="Enter new value to change"
               onChange={(e) => setValues((prev) => ({ ...prev, [entry.key]: e.target.value }))}
-              className="w-48"
+              className="w-full"
             />
             <Button
               variant="ghost"
@@ -353,72 +383,58 @@ function ConfigurationSection({
           </div>
         )
       default:
+        if (commaListKeys.has(entry.key)) {
+          return (
+            <Textarea
+              value={val}
+              onChange={(e) => setValues((prev) => ({ ...prev, [entry.key]: e.target.value }))}
+              placeholder="One per line or comma-separated"
+              rows={2}
+              className="w-full font-mono text-xs"
+            />
+          )
+        }
         return (
           <Input
             type="text"
             value={val}
             onChange={(e) => setValues((prev) => ({ ...prev, [entry.key]: e.target.value }))}
-            className="w-48"
+            className="w-full"
           />
         )
     }
   }
 
   return (
-    <>
-      <div className="space-y-4">
-        {categories.map((category) => {
-          const entries = settings[category]
-          const isCollapsed = collapsedCategories.has(category)
-          return (
-            <Card key={category}>
-              <CardHeader
-                role="button"
-                tabIndex={0}
-                aria-expanded={!isCollapsed}
-                className="cursor-pointer select-none"
-                onClick={() => toggleCategory(category)}
-                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleCategory(category) } }}
-              >
-                <CardTitle className="flex items-center gap-2 text-sm">
-                  {isCollapsed ? (
-                    <ChevronRight className="h-4 w-4 text-zinc-500" />
-                  ) : (
-                    <ChevronDown className="h-4 w-4 text-zinc-500" />
-                  )}
-                  {category}
-                  <Badge variant="secondary" className="text-[10px]">
-                    {entries.length}
-                  </Badge>
-                </CardTitle>
-              </CardHeader>
-              {!isCollapsed && (
-                <CardContent className="space-y-4">
-                  {entries.map((entry) => (
-                    <div key={entry.key} className="flex items-center justify-between gap-4">
-                      <div className="min-w-0 flex-1">
-                        <div className="text-sm font-medium">{entry.label}</div>
-                        <div className="text-xs text-muted-foreground">{entry.description}</div>
-                      </div>
-                      <div className="shrink-0">{renderInput(entry)}</div>
-                    </div>
-                  ))}
-                </CardContent>
-              )}
-            </Card>
-          )
-        })}
-
-        <div className="flex justify-end">
-          <Button onClick={handleSave} disabled={saving || !hasChanges}>
-            <Save className="h-4 w-4" />
-            {saving ? 'Saving...' : 'Save Settings'}
-          </Button>
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-lg font-semibold capitalize">{category}</h2>
+          <p className="text-sm text-muted-foreground">
+            {entries.length} setting{entries.length !== 1 ? 's' : ''}
+          </p>
         </div>
+        <Button onClick={onSave} disabled={saving || !hasChanges} size="sm">
+          <Save className="h-4 w-4" />
+          {saving ? 'Saving...' : 'Save'}
+        </Button>
       </div>
 
-      {toast && <Toast message={toast.message} type={toast.type} onDismiss={() => setToast(null)} />}
-    </>
+      <div className="space-y-5">
+        {entries.map((entry) => (
+          <div key={entry.key} className={entry.type === 'boolean'
+            ? 'flex items-center justify-between gap-4'
+            : 'space-y-1.5'
+          }>
+            <div className="min-w-0">
+              <div className="text-sm font-medium">{entry.label}</div>
+              <div className="text-xs text-muted-foreground">{entry.description}</div>
+            </div>
+            <div className={entry.type === 'boolean' ? 'shrink-0' : 'max-w-md'}>{renderInput(entry)}</div>
+          </div>
+        ))}
+      </div>
+    </div>
   )
 }
 
@@ -867,9 +883,124 @@ function DangerZoneSection({ onReset }: { onReset: () => void }) {
   )
 }
 
+// --- Feature Page (individual feature subpage) ---
+
+function extractTemplateVariables(template: string): string[] {
+  const matches = template.match(/\{\{(\w+)\}\}/g)
+  if (!matches) return []
+  return [...new Set(matches.map((m) => m.slice(2, -2)))]
+}
+
+function FeaturePage({
+  title,
+  description,
+  settingKey,
+  values,
+  setValues,
+  hasChanges,
+  saving,
+  onSave,
+  template,
+  onNavigateToTemplates,
+}: {
+  title: string
+  description: string
+  settingKey: string
+  values: Record<string, string>
+  setValues: React.Dispatch<React.SetStateAction<Record<string, string>>>
+  hasChanges: boolean
+  saving: boolean
+  onSave: () => void
+  template?: PromptTemplate
+  onNavigateToTemplates?: () => void
+}) {
+  const enabled = values[settingKey] === 'true'
+  const variables = template ? extractTemplateVariables(template.template) : []
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-semibold">{title}</h2>
+        <Button onClick={onSave} disabled={saving || !hasChanges} size="sm">
+          <Save className="h-4 w-4" />
+          {saving ? 'Saving...' : 'Save'}
+        </Button>
+      </div>
+
+      <div className="flex items-center justify-between gap-4">
+        <div className="min-w-0">
+          <div className="text-sm font-medium">Enabled</div>
+          <div className="text-xs text-muted-foreground">{description}</div>
+        </div>
+        <div className="shrink-0">
+          <Switch
+            checked={enabled}
+            onCheckedChange={(checked) =>
+              setValues((prev) => ({ ...prev, [settingKey]: String(checked) }))
+            }
+          />
+        </div>
+      </div>
+
+      <div className="border-t border-zinc-800 pt-4">
+        <h3 className="text-sm font-medium text-muted-foreground">Prompt Template</h3>
+        {template ? (
+          <Card className="mt-3">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm">{template.name}</CardTitle>
+              {template.description && (
+                <p className="text-xs text-muted-foreground">{template.description}</p>
+              )}
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <Textarea
+                value={template.template}
+                readOnly
+                rows={10}
+                className="font-mono text-xs bg-zinc-900 resize-none"
+              />
+              {onNavigateToTemplates && (
+                <p className="text-xs text-muted-foreground">
+                  Edit this template in the{' '}
+                  <button type="button" className="underline hover:text-zinc-300" onClick={onNavigateToTemplates}>
+                    Templates
+                  </button>{' '}
+                  section.
+                </p>
+              )}
+
+              <div className="flex gap-4 text-xs text-muted-foreground">
+                <span>Max attempts: <strong className="text-zinc-300">{template.max_attempts}</strong></span>
+                <span>Timeout: <strong className="text-zinc-300">{template.timeout_ms}ms</strong></span>
+              </div>
+
+              {variables.length > 0 && (
+                <div>
+                  <div className="text-xs font-medium text-muted-foreground mb-1.5">Variables</div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {variables.map((v) => (
+                      <Badge key={v} variant="secondary" className="font-mono text-xs">
+                        {`{{${v}}}`}
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        ) : (
+          <p className="text-xs text-muted-foreground mt-1">No associated template found.</p>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // --- Main Page ---
 
 export default function SettingsPage() {
+  const [activeSection, setActiveSection] = useState<SectionId>('general')
+
   const { data: settings, refresh: refreshSettings } = useStore<SettingsMap>(
     '/settings',
     () => api.get('/settings'),
@@ -883,6 +1014,111 @@ export default function SettingsPage() {
     () => api.get('/settings/system-info'),
     { ttl: 10_000 },
   )
+  const { data: projects, refresh: refreshProjects } = useStore<Project[]>(
+    '/projects',
+    () => api.get('/projects'),
+  )
+  const { data: cronjobs } = useStore<CronjobOption[]>(
+    '/cronjobs',
+    () => api.get('/cronjobs'),
+  )
+
+  // --- Repos management state ---
+  const [repoDialogOpen, setRepoDialogOpen] = useState(false)
+  const [editingProject, setEditingProject] = useState<Project | null>(null)
+
+  // --- Lifted settings form state ---
+  const [values, setValues] = useState<Record<string, string>>({})
+  const [visibleSecrets, setVisibleSecrets] = useState<Set<string>>(new Set())
+  const [saving, setSaving] = useState(false)
+  const [configToast, setConfigToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null)
+
+  // Sync form values when settings load or refresh
+  useEffect(() => {
+    if (!settings) return
+    const initial: Record<string, string> = {}
+    for (const entries of Object.values(settings)) {
+      for (const entry of entries) {
+        initial[entry.key] = entry.type === 'secret' ? '' : entry.value
+      }
+    }
+    setValues(initial)
+  }, [settings])
+
+  const toggleSecretVisibility = (key: string) => {
+    setVisibleSecrets((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
+
+  const hasChanges = useMemo(() => {
+    if (!settings) return false
+    for (const entries of Object.values(settings)) {
+      for (const entry of entries) {
+        if (entry.type === 'secret' && values[entry.key] === '') continue
+        if (values[entry.key] !== entry.value) return true
+      }
+    }
+    return false
+  }, [settings, values])
+
+  const handleSave = async () => {
+    if (!settings) return
+    setSaving(true)
+    setConfigToast(null)
+    try {
+      const payload: Record<string, string> = {}
+      for (const entries of Object.values(settings)) {
+        for (const entry of entries) {
+          if (entry.type === 'secret' && values[entry.key] === '') continue
+          if (values[entry.key] !== entry.value) {
+            payload[entry.key] = values[entry.key]
+          }
+        }
+      }
+      await api.put('/settings', payload)
+      // Reset saved secrets to empty so hasChanges recalculates correctly
+      const savedSecretKeys = Object.values(settings).flat().filter(e => e.type === 'secret' && payload[e.key] !== undefined).map(e => e.key)
+      if (savedSecretKeys.length > 0) {
+        setValues((prev) => {
+          const next = { ...prev }
+          for (const key of savedSecretKeys) next[key] = ''
+          return next
+        })
+      }
+      setConfigToast({ message: 'Settings saved successfully', type: 'success' })
+      refreshSettings()
+      setTimeout(() => setConfigToast(null), 3000)
+    } catch (err) {
+      setConfigToast({ message: err instanceof Error ? err.message : 'Failed to save settings', type: 'error' })
+      setTimeout(() => setConfigToast(null), 5000)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleProjectSubmit = async (data: Partial<Project>) => {
+    if (editingProject) {
+      await api.put(`/projects/${editingProject.id}`, data)
+    } else {
+      await api.post('/projects', data)
+    }
+    setEditingProject(null)
+    refreshProjects()
+  }
+
+  const handleProjectEdit = (p: Project) => {
+    setEditingProject(p)
+    setRepoDialogOpen(true)
+  }
+
+  const handleProjectDelete = async (id: number) => {
+    await api.del(`/projects/${id}`)
+    refreshProjects()
+  }
 
   if (settings === null || templates === null) return <SettingsSkeleton />
 
@@ -892,22 +1128,326 @@ export default function SettingsPage() {
     refreshSystemInfo()
   }
 
+  const renderContent = () => {
+    const category = SECTION_TO_CATEGORY[activeSection]
+
+    // Config category sections
+    if (category && settings[category]) {
+      return (
+        <CategorySection
+          category={category}
+          entries={settings[category]}
+          values={values}
+          setValues={setValues}
+          visibleSecrets={visibleSecrets}
+          toggleSecretVisibility={toggleSecretVisibility}
+          hasChanges={hasChanges}
+          saving={saving}
+          onSave={handleSave}
+        />
+      )
+    }
+
+    // If the category key doesn't exist in settings yet, show empty state for config sections
+    if (category) {
+      return (
+        <div className="space-y-6">
+          <div>
+            <h2 className="text-lg font-semibold capitalize">{category}</h2>
+            <p className="text-sm text-muted-foreground">No settings available for this category.</p>
+          </div>
+        </div>
+      )
+    }
+
+    // Feature subpages
+    const featurePages: Record<string, { title: string; settingKey: string; description: string; templateSlug?: string }> = {
+      'feat-pr-review': { title: 'Auto PR Review', settingKey: 'features.auto_pr_review', description: 'Automatically address PR review feedback using Claude', templateSlug: 'pr-review' },
+      'feat-self-heal': { title: 'Self Heal', settingKey: 'features.self_heal', description: 'Auto-fix system errors when detected', templateSlug: 'self-heal' },
+      'feat-cron': { title: 'Cron Scheduler', settingKey: 'features.cron_scheduler', description: 'Enable the cron job scheduler' },
+      'feat-auto-merge': { title: 'Auto Merge', settingKey: 'features.auto_merge', description: 'Auto-merge PRs after all checks pass and approval received' },
+    }
+
+    const featureDef = featurePages[activeSection]
+    if (featureDef) {
+      const featureTemplate = featureDef.templateSlug
+        ? templates?.find((t) => t.slug === featureDef.templateSlug)
+        : undefined
+      return (
+        <FeaturePage
+          title={featureDef.title}
+          description={featureDef.description}
+          settingKey={featureDef.settingKey}
+          values={values}
+          setValues={setValues}
+          hasChanges={hasChanges}
+          saving={saving}
+          onSave={handleSave}
+          template={featureTemplate}
+          onNavigateToTemplates={featureTemplate ? () => setActiveSection('templates') : undefined}
+        />
+      )
+    }
+
+    switch (activeSection) {
+      case 'general':
+        return systemInfo ? <SystemInfoSection info={systemInfo} /> : (
+          <div className="text-sm text-muted-foreground">Loading system info...</div>
+        )
+      case 'projects':
+        return (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-semibold">Projects</h2>
+                <p className="text-sm text-muted-foreground">
+                  {projects?.length ?? 0} repo{(projects?.length ?? 0) !== 1 ? 's' : ''} configured
+                </p>
+              </div>
+              <Button size="sm" onClick={() => { setEditingProject(null); setRepoDialogOpen(true) }}>
+                <Plus className="h-4 w-4" /> New Repo
+              </Button>
+            </div>
+            <ProjectList
+              projects={projects ?? []}
+              onEdit={handleProjectEdit}
+              onDelete={handleProjectDelete}
+            />
+            <ProjectForm
+              open={repoDialogOpen}
+              onOpenChange={setRepoDialogOpen}
+              project={editingProject}
+              cronjobs={cronjobs ?? []}
+              onSubmit={handleProjectSubmit}
+            />
+          </div>
+        )
+      case 'templates': {
+        // Filter out templates already shown on their feature pages
+        const featureTemplateSlugs = new Set(['pr-review', 'self-heal', 'error-triage'])
+        const otherTemplates = templates.filter(t => !featureTemplateSlugs.has(t.slug))
+        return <PromptTemplatesSection templates={otherTemplates} onSaved={refreshTemplates} />
+      }
+      case 'backup':
+        return <ImportExportSection onImported={refreshAll} />
+      case 'danger':
+        return <DangerZoneSection onReset={refreshAll} />
+
+      case 'feat-error-watcher': {
+        // Collect error_watcher.* entries from the worker category
+        const workerEntries = settings['worker'] ?? []
+        const ewEntries = workerEntries.filter(e => e.key.startsWith('error_watcher.'))
+        const enabledEntry = ewEntries.find(e => e.key === 'error_watcher.enabled')
+        const otherEntries = ewEntries.filter(e => e.key !== 'error_watcher.enabled')
+
+        // Keys whose values are in milliseconds — display in seconds
+        const ewMsKeys = new Set(['error_watcher.interval_ms'])
+        // Keys whose values are comma-separated lists
+        const ewCommaKeys = new Set(['error_watcher.labels'])
+
+        const renderEwInput = (entry: SettingEntry) => {
+          const val = values[entry.key] ?? ''
+          switch (entry.type) {
+            case 'boolean':
+              return (
+                <Switch
+                  checked={val === 'true'}
+                  onCheckedChange={(checked) =>
+                    setValues((prev) => ({ ...prev, [entry.key]: String(checked) }))
+                  }
+                />
+              )
+            case 'number':
+              if (ewMsKeys.has(entry.key)) {
+                const displayVal = val !== '' ? String(Math.round(Number(val) / 1000)) : ''
+                return (
+                  <div className="flex items-center gap-2">
+                    <Input
+                      type="number"
+                      value={displayVal}
+                      onChange={(e) => {
+                        const seconds = e.target.value
+                        const ms = seconds !== '' ? String(Number(seconds) * 1000) : ''
+                        setValues((prev) => ({ ...prev, [entry.key]: ms }))
+                      }}
+                      className="w-full"
+                    />
+                    <span className="text-xs text-muted-foreground shrink-0">seconds</span>
+                  </div>
+                )
+              }
+              return (
+                <Input
+                  type="number"
+                  value={val}
+                  onChange={(e) => setValues((prev) => ({ ...prev, [entry.key]: e.target.value }))}
+                  className="w-full"
+                />
+              )
+            default:
+              if (ewCommaKeys.has(entry.key)) {
+                return (
+                  <Textarea
+                    value={val}
+                    onChange={(e) => setValues((prev) => ({ ...prev, [entry.key]: e.target.value }))}
+                    placeholder="One per line or comma-separated"
+                    rows={2}
+                    className="w-full font-mono text-xs"
+                  />
+                )
+              }
+              return (
+                <Input
+                  type="text"
+                  value={val}
+                  onChange={(e) => setValues((prev) => ({ ...prev, [entry.key]: e.target.value }))}
+                  className="w-full"
+                />
+              )
+          }
+        }
+
+        const triageTemplate = templates.find(t => t.slug === 'error-triage')
+        const triageVars = triageTemplate ? extractTemplateVariables(triageTemplate.template) : []
+
+        return (
+          <div className="space-y-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-semibold">Error Watcher</h2>
+                <p className="text-sm text-muted-foreground">
+                  Monitor Discord channels for errors and create triaged GitHub issues
+                </p>
+              </div>
+              <Button onClick={handleSave} disabled={saving || !hasChanges} size="sm">
+                <Save className="h-4 w-4" />
+                {saving ? 'Saving...' : 'Save'}
+              </Button>
+            </div>
+
+            {/* Enabled toggle */}
+            {enabledEntry && (
+              <div className="flex items-center justify-between gap-4">
+                <div className="min-w-0">
+                  <div className="text-sm font-medium">{enabledEntry.label}</div>
+                  <div className="text-xs text-muted-foreground">{enabledEntry.description}</div>
+                </div>
+                <div className="shrink-0">{renderEwInput(enabledEntry)}</div>
+              </div>
+            )}
+
+            {/* Other error_watcher worker settings */}
+            {otherEntries.length > 0 && (
+              <div className="space-y-5">
+                {otherEntries.map((entry) => (
+                  <div key={entry.key} className={entry.type === 'boolean'
+                    ? 'flex items-center justify-between gap-4'
+                    : 'space-y-1.5'
+                  }>
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium">{entry.label}</div>
+                      <div className="text-xs text-muted-foreground">{entry.description}</div>
+                    </div>
+                    <div className={entry.type === 'boolean' ? 'shrink-0' : 'max-w-md'}>{renderEwInput(entry)}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* error-triage prompt template */}
+            <div className="border-t border-zinc-800 pt-4">
+              <h3 className="text-sm font-medium text-muted-foreground">Prompt Template</h3>
+              {triageTemplate ? (
+                <Card className="mt-3">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm">{triageTemplate.name}</CardTitle>
+                    {triageTemplate.description && (
+                      <p className="text-xs text-muted-foreground">{triageTemplate.description}</p>
+                    )}
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <Textarea
+                      value={triageTemplate.template}
+                      readOnly
+                      rows={10}
+                      className="font-mono text-xs bg-zinc-900 resize-none"
+                    />
+
+                    <div className="flex gap-4 text-xs text-muted-foreground">
+                      <span>Max attempts: <strong className="text-zinc-300">{triageTemplate.max_attempts}</strong></span>
+                      <span>Timeout: <strong className="text-zinc-300">{triageTemplate.timeout_ms}ms</strong></span>
+                    </div>
+
+                    {triageVars.length > 0 && (
+                      <div>
+                        <div className="text-xs font-medium text-muted-foreground mb-1.5">Variables</div>
+                        <div className="flex flex-wrap gap-1.5">
+                          {triageVars.map((v) => (
+                            <Badge key={v} variant="secondary" className="font-mono text-xs">
+                              {`{{${v}}}`}
+                            </Badge>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              ) : (
+                <p className="text-xs text-muted-foreground mt-1">No associated template found.</p>
+              )}
+            </div>
+          </div>
+        )
+      }
+
+      default:
+        return null
+    }
+  }
+
   return (
-    <div className="space-y-6">
+    <div className="mx-auto max-w-5xl">
       <div className="flex items-center gap-2">
         <Settings className="h-6 w-6" />
         <h1 className="text-2xl font-bold">Settings</h1>
       </div>
 
-      {systemInfo && <SystemInfoSection info={systemInfo} />}
+      <div className="mt-6 flex gap-6">
+        {/* Sidebar */}
+        <aside className="w-52 shrink-0">
+          <nav className="sticky top-4 space-y-0.5">
+            {NAV_ITEMS.map((item) => {
+              const Icon = item.icon
+              return (
+                <div key={item.id}>
+                  {item.separator === 'before' && (
+                    <div className="my-2 border-t border-zinc-800" />
+                  )}
+                  <button
+                    onClick={() => setActiveSection(item.id)}
+                    className={cn(
+                      'flex items-center gap-2 w-full rounded-lg px-3 py-2 text-sm font-medium transition-colors',
+                      activeSection === item.id
+                        ? 'bg-zinc-800 text-zinc-100'
+                        : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50'
+                    )}
+                  >
+                    <Icon className="h-4 w-4" />
+                    {item.label}
+                  </button>
+                </div>
+              )
+            })}
+          </nav>
+        </aside>
 
-      <ConfigurationSection settings={settings} onSaved={refreshSettings} />
+        {/* Content area */}
+        <div className="flex-1 min-w-0">
+          {renderContent()}
+        </div>
+      </div>
 
-      <PromptTemplatesSection templates={templates} onSaved={refreshTemplates} />
-
-      <ImportExportSection onImported={refreshAll} />
-
-      <DangerZoneSection onReset={refreshAll} />
+      {configToast && <Toast message={configToast.message} type={configToast.type} onDismiss={() => setConfigToast(null)} />}
     </div>
   )
 }

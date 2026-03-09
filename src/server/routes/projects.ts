@@ -35,7 +35,9 @@ router.get('/:id', async (req, res) => {
 })
 
 router.post('/', async (req, res) => {
-  const { name, repo_url, description, status, cronjob_ids } = req.body
+  const { name, repo_url, description, status, cronjob_ids,
+    worker_timeout_ms, default_labels, max_attempts, notify_on_success, notify_on_failure,
+    error_watcher_enabled, error_watcher_channel, error_watcher_labels } = req.body
   if (!name) return res.status(400).json({ error: 'name is required' })
 
   const result = await prisma.$transaction(async (tx) => {
@@ -45,6 +47,14 @@ router.post('/', async (req, res) => {
         repoUrl: repo_url || '',
         description: description || '',
         status: (VALID_PROJECT_STATUSES as readonly string[]).includes(status) ? status as ProjectStatus : 'active',
+        workerTimeoutMs: worker_timeout_ms ?? null,
+        defaultLabels: default_labels ?? null,
+        maxAttempts: max_attempts ?? null,
+        notifyOnSuccess: notify_on_success ?? null,
+        notifyOnFailure: notify_on_failure ?? null,
+        errorWatcherEnabled: error_watcher_enabled ?? false,
+        errorWatcherChannel: error_watcher_channel ?? null,
+        errorWatcherLabels: error_watcher_labels ?? null,
       },
     })
     if (Array.isArray(cronjob_ids) && cronjob_ids.length > 0) {
@@ -62,7 +72,9 @@ router.post('/', async (req, res) => {
 })
 
 router.put('/:id', async (req, res) => {
-  const { name, repo_url, description, status, cronjob_ids } = req.body
+  const { name, repo_url, description, status, cronjob_ids,
+    worker_timeout_ms, default_labels, max_attempts, notify_on_success, notify_on_failure,
+    error_watcher_enabled, error_watcher_channel, error_watcher_labels } = req.body
   const id = parseInt(req.params.id)
 
   try {
@@ -74,6 +86,14 @@ router.put('/:id', async (req, res) => {
           ...(repo_url !== undefined && { repoUrl: repo_url }),
           ...(description !== undefined && { description }),
           ...(status !== undefined && (VALID_PROJECT_STATUSES as readonly string[]).includes(status) && { status: status as ProjectStatus }),
+          ...(worker_timeout_ms !== undefined && { workerTimeoutMs: worker_timeout_ms }),
+          ...(default_labels !== undefined && { defaultLabels: default_labels }),
+          ...(max_attempts !== undefined && { maxAttempts: max_attempts }),
+          ...(notify_on_success !== undefined && { notifyOnSuccess: notify_on_success }),
+          ...(notify_on_failure !== undefined && { notifyOnFailure: notify_on_failure }),
+          ...(error_watcher_enabled !== undefined && { errorWatcherEnabled: error_watcher_enabled }),
+          ...(error_watcher_channel !== undefined && { errorWatcherChannel: error_watcher_channel }),
+          ...(error_watcher_labels !== undefined && { errorWatcherLabels: error_watcher_labels }),
         },
       })
       if (Array.isArray(cronjob_ids)) {

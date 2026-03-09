@@ -17,13 +17,11 @@ export interface Config {
     pollIntervalMs: number
     autoAssign: boolean
     defaultLabels: string[]
-    reposWhitelist: string[]
   }
   discord: {
     enabled: boolean
     token: string | null
     ownerUserId: string | null
-    notifyChannelId: string | null
     triggerWhitelist: TriggerRule[]
   }
   errorWatcher: ErrorWatcherConfig
@@ -74,13 +72,11 @@ function envFallbackConfig(): Config {
       pollIntervalMs: parseInt(process.env.ULTRADEV_POLL_INTERVAL_MS || '120000', 10),
       autoAssign: process.env.ULTRADEV_GITHUB_AUTO_ASSIGN === 'true',
       defaultLabels: splitCsv(process.env.ULTRADEV_GITHUB_DEFAULT_LABELS || ''),
-      reposWhitelist: splitCsv(process.env.ULTRADEV_GITHUB_REPOS_WHITELIST || ''),
     },
     discord: {
       enabled: process.env.ULTRADEV_DISCORD_ENABLED !== 'false',
       token: process.env.ULTRADEV_DISCORD_TOKEN || null,
       ownerUserId: process.env.ULTRADEV_DISCORD_OWNER_USER_ID || null,
-      notifyChannelId: process.env.ULTRADEV_DISCORD_NOTIFY_CHANNEL_ID || null,
       triggerWhitelist: parseTriggerWhitelist(process.env.ULTRADEV_DISCORD_TRIGGER_WHITELIST || ''),
     },
     errorWatcher: {
