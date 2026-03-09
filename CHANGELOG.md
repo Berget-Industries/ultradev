@@ -1,5 +1,11 @@
 # ultradev-dashboard
 
+## 1.2.0
+
+### Minor Changes
+
+- [#20](https://github.com/Berget-Industries/ultradev/pull/20) [`da5ccad`](https://github.com/Berget-Industries/ultradev/commit/da5ccad0e241e8c0bfadde59f3eab77827b15023) Thanks [@willebergh](https://github.com/willebergh)! - Replace raw SQL with Prisma ORM, add database-driven configuration and editable prompt templates. Includes a new Settings page for managing all config (GitHub, Discord, worker, paths, Claude) and editing worker prompt templates through the UI. Fixes the review timestamp comparison bug (PR [#19](https://github.com/berget-industries/ultradev/issues/19)) by using proper Date→string normalization.
+
 ## 1.1.0
 
 ### Minor Changes
