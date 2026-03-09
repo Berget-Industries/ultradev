@@ -17,7 +17,6 @@ export interface Config {
     pollIntervalMs: number
     autoAssign: boolean
     defaultLabels: string[]
-    reposWhitelist: string[]
   }
   discord: {
     enabled: boolean
@@ -74,7 +73,6 @@ function envFallbackConfig(): Config {
       pollIntervalMs: parseInt(process.env.ULTRADEV_POLL_INTERVAL_MS || '120000', 10),
       autoAssign: process.env.ULTRADEV_GITHUB_AUTO_ASSIGN === 'true',
       defaultLabels: splitCsv(process.env.ULTRADEV_GITHUB_DEFAULT_LABELS || ''),
-      reposWhitelist: splitCsv(process.env.ULTRADEV_GITHUB_REPOS_WHITELIST || ''),
     },
     discord: {
       enabled: process.env.ULTRADEV_DISCORD_ENABLED !== 'false',

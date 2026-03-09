@@ -2,11 +2,12 @@ import { useState, useEffect, useMemo, useRef } from 'react'
 import {
   Settings, FileText, Save, Eye, EyeOff, Plus,
   Check, AlertCircle, Server, Download, Upload, RotateCcw, Trash2,
-  Zap, Database, RefreshCw, Github, MessageSquare, Cpu, Bell,
+  Zap, Database, RefreshCw, Github, MessageSquare, Cpu,
   FolderOpen, Terminal, ScrollText, Palette, Flag,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Select } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { Badge } from '@/components/ui/badge'
@@ -60,7 +61,7 @@ type SettingsMap = Record<string, SettingEntry[]>
 // --- Sidebar nav definition ---
 
 type SectionId =
-  | 'general' | 'github' | 'discord' | 'worker' | 'notifications'
+  | 'general' | 'github' | 'discord' | 'worker'
   | 'paths' | 'claude' | 'logging' | 'appearance' | 'features'
   | 'templates' | 'backup' | 'danger'
 
@@ -76,7 +77,6 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'github', label: 'GitHub', icon: Github },
   { id: 'discord', label: 'Discord', icon: MessageSquare },
   { id: 'worker', label: 'Worker', icon: Cpu },
-  { id: 'notifications', label: 'Notifications', icon: Bell },
   { id: 'paths', label: 'Paths', icon: FolderOpen },
   { id: 'claude', label: 'Claude', icon: Terminal },
   { id: 'logging', label: 'Logging', icon: ScrollText },
@@ -92,7 +92,6 @@ const SECTION_TO_CATEGORY: Partial<Record<SectionId, string>> = {
   github: 'github',
   discord: 'discord',
   worker: 'worker',
-  notifications: 'notifications',
   paths: 'paths',
   claude: 'claude',
   logging: 'logging',
@@ -276,17 +275,45 @@ function CategorySection({
   saving: boolean
   onSave: () => void
 }) {
+  // Keys whose values are stored in milliseconds — display in seconds
+  const msKeys = new Set([
+    'github.poll_interval_ms',
+    'error_watcher.interval_ms',
+    'worker.default_timeout_ms',
+  ])
+
   // Keys whose values are comma-separated lists — render as textarea
   const commaListKeys = new Set([
     'github.default_labels',
-    'github.repos_whitelist',
     'discord.trigger_whitelist',
     'error_watcher.labels',
     'claude.flags',
   ])
 
+  // Keys that render as a dropdown select with predefined options
+  const selectKeys: Record<string, string[]> = {
+    'ui.theme': ['dark', 'light', 'system'],
+  }
+
   const renderInput = (entry: SettingEntry) => {
     const val = values[entry.key] ?? ''
+
+    // Dropdown select for keys with predefined options
+    if (selectKeys[entry.key]) {
+      return (
+        <Select
+          value={val}
+          onChange={(e) => setValues((prev) => ({ ...prev, [entry.key]: e.target.value }))}
+          className="w-full"
+        >
+          {selectKeys[entry.key].map((option) => (
+            <option key={option} value={option}>
+              {option.charAt(0).toUpperCase() + option.slice(1)}
+            </option>
+          ))}
+        </Select>
+      )
+    }
 
     switch (entry.type) {
       case 'boolean':
@@ -299,6 +326,24 @@ function CategorySection({
           />
         )
       case 'number':
+        if (msKeys.has(entry.key)) {
+          const displayVal = val !== '' ? String(Math.round(Number(val) / 1000)) : ''
+          return (
+            <div className="flex items-center gap-2">
+              <Input
+                type="number"
+                value={displayVal}
+                onChange={(e) => {
+                  const seconds = e.target.value
+                  const ms = seconds !== '' ? String(Number(seconds) * 1000) : ''
+                  setValues((prev) => ({ ...prev, [entry.key]: ms }))
+                }}
+                className="w-full"
+              />
+              <span className="text-xs text-muted-foreground shrink-0">seconds</span>
+            </div>
+          )
+        }
         return (
           <Input
             type="number"
@@ -865,6 +910,10 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false)
   const [configToast, setConfigToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null)
 
+  // --- Repos management (embedded in GitHub section) ---
+  const [repoDialogOpen, setRepoDialogOpen] = useState(false)
+  const [editingProject, setEditingProject] = useState<Project | null>(null)
+
   // Sync form values when settings load or refresh
   useEffect(() => {
     if (!settings) return
@@ -939,10 +988,6 @@ export default function SettingsPage() {
     refreshTemplates()
     refreshSystemInfo()
   }
-
-  // --- Repos management (embedded in GitHub section) ---
-  const [repoDialogOpen, setRepoDialogOpen] = useState(false)
-  const [editingProject, setEditingProject] = useState<Project | null>(null)
 
   const handleProjectSubmit = async (data: Partial<Project>) => {
     if (editingProject) {
