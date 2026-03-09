@@ -102,6 +102,9 @@ async function runUpdate(latestTag: string) {
 
     // Step 4 — restart
     setStepStatus('restart', 'in_progress', 'Restarting server…')
+    // Reset active flag so a stale state doesn't block future updates
+    // (defensive: if process.exit somehow doesn't fire)
+    updateState.active = false
     // Give SSE clients a moment to receive the final state before exiting
     setTimeout(() => process.exit(0), 1_500)
   } catch (err: any) {
