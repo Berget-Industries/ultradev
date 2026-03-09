@@ -141,27 +141,31 @@ router.post('/update', async (_req, res) => {
     return
   }
 
+  // Acquire lock immediately to prevent TOCTOU race
+  updateState.active = true
+
   try {
     cachedLatest = null
     const latestTag = await getLatestRelease()
     if (!latestTag) {
+      updateState.active = false
       res.status(404).json({ error: 'No release tags found' })
       return
     }
 
     // Initialise progress state and kick off the background update
-    updateState = {
-      active: true,
-      version: latestTag,
-      steps: makeSteps(),
-      error: null,
-    }
+    updateState.version = latestTag
+    updateState.steps = makeSteps()
+    updateState.error = null
 
     // Fire-and-forget — progress is tracked via updateState / SSE
-    runUpdate(latestTag)
+    runUpdate(latestTag).catch((err) => {
+      console.error('[version] Unexpected error in runUpdate:', err)
+    })
 
     res.json({ started: true, version: latestTag })
   } catch (err: any) {
+    updateState.active = false
     console.error('[version] Update failed:', err)
     res.status(500).json({ error: err.message || 'Update failed' })
   }
