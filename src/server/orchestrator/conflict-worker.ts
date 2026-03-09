@@ -148,13 +148,17 @@ async function buildConflictPrompt(
     console.error('[conflict-worker] Failed to load prompt template:', err.message)
   }
   if (tmpl) {
-    return renderTemplate(tmpl.template, {
-      repo,
-      pr_number: String(pr.number),
-      pr_title: pr.title,
-      head_ref: headRefName,
-      base_ref: baseRefName,
-    })
+    try {
+      return renderTemplate(tmpl.template, {
+        repo,
+        pr_number: String(pr.number),
+        pr_title: pr.title,
+        head_ref: headRefName,
+        base_ref: baseRefName,
+      })
+    } catch (err: any) {
+      console.error('[conflict-worker] Failed to render prompt template:', err.message)
+    }
   }
 
   return `You are resolving merge conflicts on PR #${pr.number} in ${repo}.

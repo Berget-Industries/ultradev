@@ -31,22 +31,22 @@ router.get('/', async (_req, res) => {
 // PUT /api/settings — bulk update { key: value, ... }
 router.put('/', async (req, res) => {
   const updates = req.body as Record<string, string>
-  const errors: string[] = []
 
-  for (const [key, value] of Object.entries(updates)) {
-    try {
-      await prisma.setting.update({
-        where: { key },
-        data: { value: String(value) },
-      })
-    } catch (err: any) {
-      if (err.code === 'P2025') continue // Key doesn't exist — skip
-      errors.push(`${key}: ${err.message}`)
+  try {
+    await prisma.$transaction(async (tx) => {
+      for (const [key, value] of Object.entries(updates)) {
+        await tx.setting.update({
+          where: { key },
+          data: { value: String(value) },
+        })
+      }
+    })
+  } catch (err: any) {
+    if (err.code === 'P2025') {
+      res.status(400).json({ ok: false, error: 'Unknown setting key' })
+      return
     }
-  }
-
-  if (errors.length > 0) {
-    res.status(500).json({ ok: false, errors })
+    res.status(500).json({ ok: false, error: err.message })
     return
   }
 

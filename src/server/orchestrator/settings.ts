@@ -18,7 +18,8 @@ export async function loadSettingsConfig(): Promise<Config> {
   const map = new Map(rows.map(r => [r.key, r.value]))
 
   function get(key: string, fallbackEnv: string | undefined, defaultVal: string): string {
-    return map.get(key) || fallbackEnv || defaultVal
+    if (map.has(key)) return map.get(key)!
+    return fallbackEnv || defaultVal
   }
 
   const flags = get('claude.flags', process.env.ULTRADEV_CLAUDE_FLAGS, '--dangerously-skip-permissions')

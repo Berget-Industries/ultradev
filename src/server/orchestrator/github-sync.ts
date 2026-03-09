@@ -106,6 +106,7 @@ async function syncIssues(username: string) {
         title: issue.title,
         state: 'OPEN',
         labels: labels,
+        assignee: username,
         updatedAt: issue.updatedAt ? new Date(issue.updatedAt) : undefined,
         syncedAt: new Date(),
       },
@@ -125,8 +126,16 @@ async function syncIssues(username: string) {
 
   // Mark issues that are no longer open as closed (stale cleanup)
   if (issues.length < 50) {
-    const repos = [...new Set(issues.map(i => i.repository?.nameWithOwner).filter(Boolean))]
-    for (const repo of repos) {
+    // Include repos from current results AND repos with open issues in DB
+    const resultRepos = new Set(issues.map(i => i.repository?.nameWithOwner).filter(Boolean))
+    const dbRepoRows = await prisma.githubIssue.findMany({
+      where: { assignee: username, state: 'OPEN' },
+      distinct: ['repo'],
+      select: { repo: true },
+    })
+    const allRepos = new Set([...resultRepos, ...dbRepoRows.map(r => r.repo)])
+
+    for (const repo of allRepos) {
       const repoIssueNums = issues
         .filter(i => i.repository?.nameWithOwner === repo)
         .map(i => i.number)
@@ -242,6 +251,20 @@ async function syncPrs(username: string, repos: string[]) {
       })
 
       totalPrs++
+    }
+
+    // Mark PRs no longer returned by GitHub as closed (stale cleanup)
+    if (prState === 'open' && prs.length < 50) {
+      const fetchedNumbers = prs.map(p => p.number)
+      await prisma.githubPr.updateMany({
+        where: {
+          repo,
+          author: username,
+          state: 'OPEN',
+          number: { notIn: fetchedNumbers },
+        },
+        data: { state: 'CLOSED', syncedAt: new Date() },
+      })
     }
   }
 

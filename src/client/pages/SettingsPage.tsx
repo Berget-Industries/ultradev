@@ -66,7 +66,8 @@ function ConfigurationSection({
     const initial: Record<string, string> = {}
     for (const entries of Object.values(settings)) {
       for (const entry of entries) {
-        initial[entry.key] = entry.value
+        // Don't copy masked secret values into the form — use empty string instead
+        initial[entry.key] = entry.type === 'secret' ? '' : entry.value
       }
     }
     return initial
@@ -81,6 +82,8 @@ function ConfigurationSection({
   const hasChanges = useMemo(() => {
     for (const entries of Object.values(settings)) {
       for (const entry of entries) {
+        // Skip secrets that haven't been touched (empty = unchanged)
+        if (entry.type === 'secret' && values[entry.key] === '') continue
         if (values[entry.key] !== entry.value) return true
       }
     }
@@ -109,10 +112,11 @@ function ConfigurationSection({
     setSaving(true)
     setToast(null)
     try {
-      // Build payload: only changed values
+      // Build payload: only changed values, skip untouched secrets
       const payload: Record<string, string> = {}
       for (const entries of Object.values(settings)) {
         for (const entry of entries) {
+          if (entry.type === 'secret' && values[entry.key] === '') continue
           if (values[entry.key] !== entry.value) {
             payload[entry.key] = values[entry.key]
           }
@@ -196,8 +200,12 @@ function ConfigurationSection({
           return (
             <Card key={category}>
               <CardHeader
+                role="button"
+                tabIndex={0}
+                aria-expanded={!isCollapsed}
                 className="cursor-pointer select-none"
                 onClick={() => toggleCategory(category)}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleCategory(category) } }}
               >
                 <CardTitle className="flex items-center gap-2 text-sm">
                   {isCollapsed ? (
@@ -404,7 +412,10 @@ function PromptTemplatesSection({
           {templates.map((t) => (
             <div
               key={t.slug}
+              role="button"
+              tabIndex={0}
               onClick={() => setEditingTemplate(t)}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setEditingTemplate(t) } }}
               className="flex items-center justify-between rounded-lg border border-zinc-800 p-4 hover:bg-zinc-800/50 cursor-pointer transition-colors"
             >
               <div className="min-w-0 flex-1">

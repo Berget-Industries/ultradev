@@ -82,14 +82,21 @@ async function attemptFix(component: string, error: string, context: { file?: st
     } catch (err: any) {
       console.error('[self-heal] Failed to load prompt template:', err.message)
     }
-    const prompt = tmpl
-      ? renderTemplate(tmpl.template, {
+    let renderedPrompt: string | null = null
+    if (tmpl) {
+      try {
+        renderedPrompt = renderTemplate(tmpl.template, {
           component,
           error,
           file: fileSection,
           extra_context: extraContext,
         })
-      : `You are fixing an error in the UltraDev system (~/ultradev/).
+      } catch (err: any) {
+        console.error('[self-heal] Failed to render prompt template:', err.message)
+      }
+    }
+    const prompt = renderedPrompt
+      ?? `You are fixing an error in the UltraDev system (~/ultradev/).
 
 ## Component: ${component}
 ## Error: ${error}

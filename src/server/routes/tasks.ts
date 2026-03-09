@@ -7,10 +7,19 @@ const router = Router()
 
 const validColumns = new Set(['backlog', 'assigned', 'working', 'pr', 'merged'])
 
+function parseIntStrict(raw: string): number | null {
+  if (!/^\d+$/.test(raw)) return null
+  return parseInt(raw, 10)
+}
+
 router.get('/', async (req, res) => {
   const { project_id, column_id } = req.query
   const where: Prisma.TaskWhereInput = {}
-  if (project_id) where.projectId = parseInt(project_id as string)
+  if (project_id) {
+    const pid = parseIntStrict(project_id as string)
+    if (pid === null) return res.status(400).json({ error: 'Invalid project_id' })
+    where.projectId = pid
+  }
   if (column_id && validColumns.has(column_id as string)) where.columnId = column_id as TaskColumn
 
   const rows = await prisma.task.findMany({
@@ -42,7 +51,7 @@ router.post('/', async (req, res) => {
       columnId: col as TaskColumn,
       position,
       githubUrl: github_url || '',
-      projectId: project_id || null,
+      projectId: project_id != null ? parseInt(project_id, 10) || null : null,
     },
   })
   res.status(201).json(toSnakeCase(row))
@@ -50,9 +59,11 @@ router.post('/', async (req, res) => {
 
 router.put('/:id', async (req, res) => {
   const { title, description, github_url, project_id } = req.body
+  const id = parseIntStrict(req.params.id)
+  if (id === null) return res.status(400).json({ error: 'Invalid id' })
   try {
     const row = await prisma.task.update({
-      where: { id: parseInt(req.params.id) },
+      where: { id },
       data: {
         ...(title !== undefined && { title }),
         ...(description !== undefined && { description }),
@@ -75,13 +86,15 @@ router.put('/:id/move', async (req, res) => {
   if (!validColumns.has(column_id as string)) {
     return res.status(400).json({ error: `Invalid column_id. Must be one of: ${[...validColumns].join(', ')}` })
   }
-  const pos = typeof position === 'number' ? position : parseInt(position, 10)
-  if (!Number.isFinite(pos)) {
-    return res.status(400).json({ error: 'position must be a number' })
+  const pos = Number(position)
+  if (!Number.isInteger(pos) || pos < 0) {
+    return res.status(400).json({ error: 'position must be a non-negative integer' })
   }
+  const moveId = parseIntStrict(req.params.id)
+  if (moveId === null) return res.status(400).json({ error: 'Invalid id' })
   try {
     const row = await prisma.task.update({
-      where: { id: parseInt(req.params.id) },
+      where: { id: moveId },
       data: { columnId: column_id as TaskColumn, position: pos },
     })
     res.json(toSnakeCase(row))
@@ -92,8 +105,10 @@ router.put('/:id/move', async (req, res) => {
 })
 
 router.delete('/:id', async (req, res) => {
+  const delId = parseIntStrict(req.params.id)
+  if (delId === null) return res.status(400).json({ error: 'Invalid id' })
   try {
-    await prisma.task.delete({ where: { id: parseInt(req.params.id) } })
+    await prisma.task.delete({ where: { id: delId } })
   } catch (err: any) {
     if (err.code !== 'P2025') throw err
   }

@@ -8,8 +8,8 @@ const router = Router()
 const VALID_STATUSES: CronjobStatus[] = ['active', 'paused', 'disabled'] as CronjobStatus[]
 
 function parseId(raw: string): number | null {
-  const id = parseInt(raw, 10)
-  return Number.isNaN(id) ? null : id
+  if (!/^\d+$/.test(raw)) return null
+  return parseInt(raw, 10)
 }
 
 router.get('/', async (_req, res) => {
@@ -52,13 +52,16 @@ router.put('/:id', async (req, res) => {
         ...(description !== undefined && { description }),
         ...(command !== undefined && { command }),
         ...(status !== undefined && { status: status as CronjobStatus }),
-        ...(last_run !== undefined && { lastRun: new Date(last_run) }),
-        ...(next_run !== undefined && { nextRun: new Date(next_run) }),
+        ...(last_run !== undefined && last_run !== null && { lastRun: (() => { const d = new Date(last_run); if (isNaN(d.getTime())) throw Object.assign(new Error('Invalid last_run date'), { status: 400 }); return d })() }),
+        ...(last_run === null && { lastRun: null }),
+        ...(next_run !== undefined && next_run !== null && { nextRun: (() => { const d = new Date(next_run); if (isNaN(d.getTime())) throw Object.assign(new Error('Invalid next_run date'), { status: 400 }); return d })() }),
+        ...(next_run === null && { nextRun: null }),
       },
     })
     res.json(toSnakeCase(row))
   } catch (err: any) {
     if (err.code === 'P2025') return res.status(404).json({ error: 'Not found' })
+    if (err.status === 400) return res.status(400).json({ error: err.message })
     throw err
   }
 })
