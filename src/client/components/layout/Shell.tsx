@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect } from 'react'
-import { NavLink } from 'react-router-dom'
+import { NavLink, useNavigate } from 'react-router-dom'
 import { Zap, LayoutDashboard, FolderGit2, Clock, BarChart3, Settings, Maximize, Minimize, ArrowUpCircle, Loader2 } from 'lucide-react'
 import { AgentIndicator } from '@/components/agents/AgentIndicator'
 import { MaintenanceToggle } from '@/components/layout/MaintenanceToggle'
@@ -25,6 +25,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const [isFullscreen, setIsFullscreen] = useState(!!document.fullscreenElement)
   const { data: version } = useStore<VersionInfo>('/version', () => api.get('/version'), { ttl: 10 * 60_000 })
   const [updating, setUpdating] = useState(false)
+  const navigate = useNavigate()
 
   const toggleFullscreen = useCallback(() => {
     if (document.fullscreenElement) {
@@ -38,18 +39,11 @@ export function Shell({ children }: { children: React.ReactNode }) {
     setUpdating(true)
     try {
       await api.post('/version/update', {})
-      // Server will restart — poll until it comes back
-      const poll = setInterval(async () => {
-        try {
-          await api.get('/version')
-          clearInterval(poll)
-          window.location.reload()
-        } catch { /* still restarting */ }
-      }, 2000)
+      navigate(`/updating?version=${encodeURIComponent(version?.latest ?? '')}`)
     } catch {
       setUpdating(false)
     }
-  }, [])
+  }, [navigate, version?.latest])
 
   useEffect(() => {
     const handler = () => setIsFullscreen(!!document.fullscreenElement)
