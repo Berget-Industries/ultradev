@@ -5,6 +5,7 @@ import {
   Download,
   GitBranch,
   Package,
+  Database,
   RotateCcw,
   Check,
   AlertCircle,
@@ -16,7 +17,7 @@ import { api } from '@/lib/api'
 
 // --- Types ---
 
-type StepName = 'fetch' | 'checkout' | 'install' | 'restart'
+type StepName = 'fetch' | 'checkout' | 'install' | 'migrate' | 'restart'
 type StepStatus = 'pending' | 'in_progress' | 'done' | 'error'
 
 interface UpdateStep {
@@ -38,10 +39,11 @@ const STEP_META: Record<StepName, { label: string; icon: typeof Download }> = {
   fetch: { label: 'Fetch', icon: Download },
   checkout: { label: 'Checkout', icon: GitBranch },
   install: { label: 'Install', icon: Package },
+  migrate: { label: 'Migrate', icon: Database },
   restart: { label: 'Restart', icon: RotateCcw },
 }
 
-const STEP_ORDER: StepName[] = ['fetch', 'checkout', 'install', 'restart']
+const STEP_ORDER: StepName[] = ['fetch', 'checkout', 'install', 'migrate', 'restart']
 
 // --- Helpers ---
 
