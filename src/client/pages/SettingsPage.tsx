@@ -1,8 +1,9 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import {
-  Settings, FileText, Save, Eye, EyeOff, ChevronDown, ChevronRight,
+  Settings, FileText, Save, Eye, EyeOff,
   Check, AlertCircle, Server, Download, Upload, RotateCcw, Trash2,
-  Zap, Database, RefreshCw,
+  Zap, Database, RefreshCw, Github, MessageSquare, Cpu, Bell,
+  FolderOpen, Terminal, ScrollText, Palette, Flag,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -14,6 +15,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { SettingsSkeleton } from '@/components/skeletons/SettingsSkeleton'
 import { api } from '@/lib/api'
 import { useStore } from '@/lib/store'
+import { cn } from '@/lib/utils'
 
 // --- Types ---
 
@@ -52,6 +54,49 @@ interface SystemInfo {
 }
 
 type SettingsMap = Record<string, SettingEntry[]>
+
+// --- Sidebar nav definition ---
+
+type SectionId =
+  | 'general' | 'github' | 'discord' | 'worker' | 'notifications'
+  | 'paths' | 'claude' | 'logging' | 'appearance' | 'features'
+  | 'templates' | 'backup' | 'danger'
+
+interface NavItem {
+  id: SectionId
+  label: string
+  icon: React.ComponentType<{ className?: string }>
+  separator?: 'before'
+}
+
+const NAV_ITEMS: NavItem[] = [
+  { id: 'general', label: 'General', icon: Server },
+  { id: 'github', label: 'GitHub', icon: Github },
+  { id: 'discord', label: 'Discord', icon: MessageSquare },
+  { id: 'worker', label: 'Worker', icon: Cpu },
+  { id: 'notifications', label: 'Notifications', icon: Bell },
+  { id: 'paths', label: 'Paths', icon: FolderOpen },
+  { id: 'claude', label: 'Claude', icon: Terminal },
+  { id: 'logging', label: 'Logging', icon: ScrollText },
+  { id: 'appearance', label: 'Appearance', icon: Palette },
+  { id: 'features', label: 'Features', icon: Flag },
+  { id: 'templates', label: 'Templates', icon: FileText, separator: 'before' },
+  { id: 'backup', label: 'Backup', icon: Database },
+  { id: 'danger', label: 'Danger Zone', icon: AlertCircle, separator: 'before' },
+]
+
+// Map section IDs to settings category names (for config sections)
+const SECTION_TO_CATEGORY: Partial<Record<SectionId, string>> = {
+  github: 'github',
+  discord: 'discord',
+  worker: 'worker',
+  notifications: 'notifications',
+  paths: 'paths',
+  claude: 'claude',
+  logging: 'logging',
+  appearance: 'appearance',
+  features: 'features',
+}
 
 // --- Toast feedback component ---
 
@@ -206,106 +251,37 @@ function SystemInfoSection({ info }: { info: SystemInfo }) {
   )
 }
 
-// --- Configuration Section ---
+// --- Category Configuration Section (single category) ---
 
-function ConfigurationSection({
-  settings,
-  onSaved,
+function CategorySection({
+  category,
+  entries,
+  values,
+  setValues,
+  visibleSecrets,
+  toggleSecretVisibility,
+  hasChanges,
+  saving,
+  onSave,
 }: {
-  settings: SettingsMap
-  onSaved: () => void
+  category: string
+  entries: SettingEntry[]
+  values: Record<string, string>
+  setValues: React.Dispatch<React.SetStateAction<Record<string, string>>>
+  visibleSecrets: Set<string>
+  toggleSecretVisibility: (key: string) => void
+  hasChanges: boolean
+  saving: boolean
+  onSave: () => void
 }) {
-  const [values, setValues] = useState<Record<string, string>>(() => {
-    const initial: Record<string, string> = {}
-    for (const entries of Object.values(settings)) {
-      for (const entry of entries) {
-        // Don't copy masked secret values into the form — use empty string instead
-        initial[entry.key] = entry.type === 'secret' ? '' : entry.value
-      }
-    }
-    return initial
-  })
-  const [visibleSecrets, setVisibleSecrets] = useState<Set<string>>(new Set())
-  const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(new Set())
-  const [saving, setSaving] = useState(false)
-  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null)
-
-  // Re-sync form values when settings refresh (e.g. after save)
-  useEffect(() => {
-    const updated: Record<string, string> = {}
-    for (const entries of Object.values(settings)) {
-      for (const entry of entries) {
-        updated[entry.key] = entry.type === 'secret' ? '' : entry.value
-      }
-    }
-    setValues(updated)
-  }, [settings])
-
-  const categories = Object.keys(settings)
-
-  const hasChanges = useMemo(() => {
-    for (const entries of Object.values(settings)) {
-      for (const entry of entries) {
-        // Skip secrets that haven't been touched (empty = unchanged)
-        if (entry.type === 'secret' && values[entry.key] === '') continue
-        if (values[entry.key] !== entry.value) return true
-      }
-    }
-    return false
-  }, [settings, values])
-
-  const toggleCategory = (cat: string) => {
-    setCollapsedCategories((prev) => {
-      const next = new Set(prev)
-      if (next.has(cat)) next.delete(cat)
-      else next.add(cat)
-      return next
-    })
-  }
-
-  const toggleSecretVisibility = (key: string) => {
-    setVisibleSecrets((prev) => {
-      const next = new Set(prev)
-      if (next.has(key)) next.delete(key)
-      else next.add(key)
-      return next
-    })
-  }
-
-  const handleSave = async () => {
-    setSaving(true)
-    setToast(null)
-    try {
-      // Build payload: only changed values, skip untouched secrets
-      const payload: Record<string, string> = {}
-      for (const entries of Object.values(settings)) {
-        for (const entry of entries) {
-          if (entry.type === 'secret' && values[entry.key] === '') continue
-          if (values[entry.key] !== entry.value) {
-            payload[entry.key] = values[entry.key]
-          }
-        }
-      }
-      await api.put('/settings', payload)
-      // Reset saved secrets to empty so hasChanges recalculates correctly
-      const savedSecretKeys = Object.values(settings).flat().filter(e => e.type === 'secret' && payload[e.key] !== undefined).map(e => e.key)
-      if (savedSecretKeys.length > 0) {
-        setValues((prev) => {
-          const next = { ...prev }
-          for (const key of savedSecretKeys) next[key] = ''
-          return next
-        })
-      }
-      setToast({ message: 'Settings saved successfully', type: 'success' })
-      onSaved()
-      setTimeout(() => setToast(null), 3000)
-    } catch (err) {
-      setToast({ message: err instanceof Error ? err.message : 'Failed to save settings', type: 'error' })
-      setTimeout(() => setToast(null), 5000)
-    } finally {
-      setSaving(false)
-    }
-  }
+  // Keys whose values are comma-separated lists — render as textarea
+  const commaListKeys = new Set([
+    'github.default_labels',
+    'github.repos_whitelist',
+    'discord.trigger_whitelist',
+    'error_watcher.labels',
+    'claude.flags',
+  ])
 
   const renderInput = (entry: SettingEntry) => {
     const val = values[entry.key] ?? ''
@@ -326,7 +302,7 @@ function ConfigurationSection({
             type="number"
             value={val}
             onChange={(e) => setValues((prev) => ({ ...prev, [entry.key]: e.target.value }))}
-            className="w-48"
+            className="w-full"
           />
         )
       case 'secret':
@@ -335,8 +311,9 @@ function ConfigurationSection({
             <Input
               type={visibleSecrets.has(entry.key) ? 'text' : 'password'}
               value={val}
+              placeholder="Enter new value to change"
               onChange={(e) => setValues((prev) => ({ ...prev, [entry.key]: e.target.value }))}
-              className="w-48"
+              className="w-full"
             />
             <Button
               variant="ghost"
@@ -353,72 +330,59 @@ function ConfigurationSection({
           </div>
         )
       default:
+        if (commaListKeys.has(entry.key)) {
+          return (
+            <Textarea
+              value={val}
+              onChange={(e) => setValues((prev) => ({ ...prev, [entry.key]: e.target.value }))}
+              placeholder="One per line or comma-separated"
+              rows={2}
+              className="w-full font-mono text-xs"
+            />
+          )
+        }
         return (
           <Input
             type="text"
             value={val}
             onChange={(e) => setValues((prev) => ({ ...prev, [entry.key]: e.target.value }))}
-            className="w-48"
+            className="w-full"
           />
         )
     }
   }
 
   return (
-    <>
-      <div className="space-y-4">
-        {categories.map((category) => {
-          const entries = settings[category]
-          const isCollapsed = collapsedCategories.has(category)
-          return (
-            <Card key={category}>
-              <CardHeader
-                role="button"
-                tabIndex={0}
-                aria-expanded={!isCollapsed}
-                className="cursor-pointer select-none"
-                onClick={() => toggleCategory(category)}
-                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleCategory(category) } }}
-              >
-                <CardTitle className="flex items-center gap-2 text-sm">
-                  {isCollapsed ? (
-                    <ChevronRight className="h-4 w-4 text-zinc-500" />
-                  ) : (
-                    <ChevronDown className="h-4 w-4 text-zinc-500" />
-                  )}
-                  {category}
-                  <Badge variant="secondary" className="text-[10px]">
-                    {entries.length}
-                  </Badge>
-                </CardTitle>
-              </CardHeader>
-              {!isCollapsed && (
-                <CardContent className="space-y-4">
-                  {entries.map((entry) => (
-                    <div key={entry.key} className="flex items-center justify-between gap-4">
-                      <div className="min-w-0 flex-1">
-                        <div className="text-sm font-medium">{entry.label}</div>
-                        <div className="text-xs text-muted-foreground">{entry.description}</div>
-                      </div>
-                      <div className="shrink-0">{renderInput(entry)}</div>
-                    </div>
-                  ))}
-                </CardContent>
-              )}
-            </Card>
-          )
-        })}
-
-        <div className="flex justify-end">
-          <Button onClick={handleSave} disabled={saving || !hasChanges}>
-            <Save className="h-4 w-4" />
-            {saving ? 'Saving...' : 'Save Settings'}
-          </Button>
-        </div>
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-lg font-semibold capitalize">{category}</h2>
+        <p className="text-sm text-muted-foreground">
+          {entries.length} setting{entries.length !== 1 ? 's' : ''}
+        </p>
       </div>
 
-      {toast && <Toast message={toast.message} type={toast.type} onDismiss={() => setToast(null)} />}
-    </>
+      <div className="space-y-5">
+        {entries.map((entry) => (
+          <div key={entry.key} className={entry.type === 'boolean'
+            ? 'flex items-center justify-between gap-4'
+            : 'space-y-1.5'
+          }>
+            <div className="min-w-0">
+              <div className="text-sm font-medium">{entry.label}</div>
+              <div className="text-xs text-muted-foreground">{entry.description}</div>
+            </div>
+            <div className={entry.type === 'boolean' ? 'shrink-0' : 'max-w-md'}>{renderInput(entry)}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="flex justify-end pt-2">
+        <Button onClick={onSave} disabled={saving || !hasChanges}>
+          <Save className="h-4 w-4" />
+          {saving ? 'Saving...' : 'Save Settings'}
+        </Button>
+      </div>
+    </div>
   )
 }
 
@@ -870,6 +834,8 @@ function DangerZoneSection({ onReset }: { onReset: () => void }) {
 // --- Main Page ---
 
 export default function SettingsPage() {
+  const [activeSection, setActiveSection] = useState<SectionId>('general')
+
   const { data: settings, refresh: refreshSettings } = useStore<SettingsMap>(
     '/settings',
     () => api.get('/settings'),
@@ -884,6 +850,79 @@ export default function SettingsPage() {
     { ttl: 10_000 },
   )
 
+  // --- Lifted settings form state ---
+  const [values, setValues] = useState<Record<string, string>>({})
+  const [visibleSecrets, setVisibleSecrets] = useState<Set<string>>(new Set())
+  const [saving, setSaving] = useState(false)
+  const [configToast, setConfigToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null)
+
+  // Sync form values when settings load or refresh
+  useEffect(() => {
+    if (!settings) return
+    const initial: Record<string, string> = {}
+    for (const entries of Object.values(settings)) {
+      for (const entry of entries) {
+        initial[entry.key] = entry.type === 'secret' ? '' : entry.value
+      }
+    }
+    setValues(initial)
+  }, [settings])
+
+  const toggleSecretVisibility = (key: string) => {
+    setVisibleSecrets((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
+
+  const hasChanges = useMemo(() => {
+    if (!settings) return false
+    for (const entries of Object.values(settings)) {
+      for (const entry of entries) {
+        if (entry.type === 'secret' && values[entry.key] === '') continue
+        if (values[entry.key] !== entry.value) return true
+      }
+    }
+    return false
+  }, [settings, values])
+
+  const handleSave = async () => {
+    if (!settings) return
+    setSaving(true)
+    setConfigToast(null)
+    try {
+      const payload: Record<string, string> = {}
+      for (const entries of Object.values(settings)) {
+        for (const entry of entries) {
+          if (entry.type === 'secret' && values[entry.key] === '') continue
+          if (values[entry.key] !== entry.value) {
+            payload[entry.key] = values[entry.key]
+          }
+        }
+      }
+      await api.put('/settings', payload)
+      // Reset saved secrets to empty so hasChanges recalculates correctly
+      const savedSecretKeys = Object.values(settings).flat().filter(e => e.type === 'secret' && payload[e.key] !== undefined).map(e => e.key)
+      if (savedSecretKeys.length > 0) {
+        setValues((prev) => {
+          const next = { ...prev }
+          for (const key of savedSecretKeys) next[key] = ''
+          return next
+        })
+      }
+      setConfigToast({ message: 'Settings saved successfully', type: 'success' })
+      refreshSettings()
+      setTimeout(() => setConfigToast(null), 3000)
+    } catch (err) {
+      setConfigToast({ message: err instanceof Error ? err.message : 'Failed to save settings', type: 'error' })
+      setTimeout(() => setConfigToast(null), 5000)
+    } finally {
+      setSaving(false)
+    }
+  }
+
   if (settings === null || templates === null) return <SettingsSkeleton />
 
   const refreshAll = () => {
@@ -892,22 +931,97 @@ export default function SettingsPage() {
     refreshSystemInfo()
   }
 
+  const renderContent = () => {
+    const category = SECTION_TO_CATEGORY[activeSection]
+
+    // Config category sections
+    if (category && settings[category]) {
+      return (
+        <CategorySection
+          category={category}
+          entries={settings[category]}
+          values={values}
+          setValues={setValues}
+          visibleSecrets={visibleSecrets}
+          toggleSecretVisibility={toggleSecretVisibility}
+          hasChanges={hasChanges}
+          saving={saving}
+          onSave={handleSave}
+        />
+      )
+    }
+
+    // If the category key doesn't exist in settings yet, show empty state for config sections
+    if (category) {
+      return (
+        <div className="space-y-6">
+          <div>
+            <h2 className="text-lg font-semibold capitalize">{category}</h2>
+            <p className="text-sm text-muted-foreground">No settings available for this category.</p>
+          </div>
+        </div>
+      )
+    }
+
+    switch (activeSection) {
+      case 'general':
+        return systemInfo ? <SystemInfoSection info={systemInfo} /> : (
+          <div className="text-sm text-muted-foreground">Loading system info...</div>
+        )
+      case 'templates':
+        return <PromptTemplatesSection templates={templates} onSaved={refreshTemplates} />
+      case 'backup':
+        return <ImportExportSection onImported={refreshAll} />
+      case 'danger':
+        return <DangerZoneSection onReset={refreshAll} />
+      default:
+        return null
+    }
+  }
+
   return (
-    <div className="space-y-6">
+    <div className="mx-auto max-w-5xl">
       <div className="flex items-center gap-2">
         <Settings className="h-6 w-6" />
         <h1 className="text-2xl font-bold">Settings</h1>
       </div>
 
-      {systemInfo && <SystemInfoSection info={systemInfo} />}
+      <div className="mt-6 flex gap-6">
+        {/* Sidebar */}
+        <aside className="w-52 shrink-0">
+          <nav className="sticky top-4 space-y-0.5">
+            {NAV_ITEMS.map((item) => {
+              const Icon = item.icon
+              return (
+                <div key={item.id}>
+                  {item.separator === 'before' && (
+                    <div className="my-2 border-t border-zinc-800" />
+                  )}
+                  <button
+                    onClick={() => setActiveSection(item.id)}
+                    className={cn(
+                      'flex items-center gap-2 w-full rounded-lg px-3 py-2 text-sm font-medium transition-colors',
+                      activeSection === item.id
+                        ? 'bg-zinc-800 text-zinc-100'
+                        : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50'
+                    )}
+                  >
+                    <Icon className="h-4 w-4" />
+                    {item.label}
+                  </button>
+                </div>
+              )
+            })}
+          </nav>
+        </aside>
 
-      <ConfigurationSection settings={settings} onSaved={refreshSettings} />
+        {/* Content area */}
+        <div className="flex-1 min-w-0">
+          {renderContent()}
+        </div>
+      </div>
 
-      <PromptTemplatesSection templates={templates} onSaved={refreshTemplates} />
-
-      <ImportExportSection onImported={refreshAll} />
-
-      <DangerZoneSection onReset={refreshAll} />
+      {configToast && <Toast message={configToast.message} type={configToast.type} onDismiss={() => setConfigToast(null)} />}
     </div>
   )
 }
