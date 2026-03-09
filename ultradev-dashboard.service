@@ -12,6 +12,7 @@ RestartSec=5
 Environment=HOME=/home/openclaw
 Environment=NODE_ENV=production
 Environment=PATH=/home/openclaw/.local/bin:/home/openclaw/.npm-global/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=/home/openclaw/ultradev/.env
 
 [Install]
 WantedBy=default.target
