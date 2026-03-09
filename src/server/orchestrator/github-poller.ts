@@ -3,6 +3,8 @@ import { spawnWorker, makeLogPath } from './worker.js'
 import { getIssueState, setIssueState } from './state.js'
 import { notify } from './notifier.js'
 import { releaseWorkerSlot } from './worker-lock.js'
+import { getPromptTemplate } from './prompt-loader.js'
+import { renderTemplate } from '../lib/template.js'
 import type { Config } from './config.js'
 
 interface IssueSummary {
@@ -29,7 +31,7 @@ export async function handleIssue(issue: IssueSummary, config: Config, attempt: 
 
     const detail = JSON.parse(body)
     const existingPrUrl = getIssueState(key)?.prUrl || null
-    const prompt = buildPrompt(repo, num, detail, existingPrUrl)
+    const prompt = await buildPrompt(repo, num, detail, existingPrUrl)
 
     notify(`⚙️ Working on **${key}** (attempt ${attempt})...`)
     const result = await spawnWorker(repo, prompt, config, key, logFile)
@@ -59,7 +61,7 @@ export async function handleIssue(issue: IssueSummary, config: Config, attempt: 
 }
 
 
-function buildPrompt(repo: string, number: number, detail: any, existingPrUrl: string | null): string {
+async function buildPrompt(repo: string, number: number, detail: any, existingPrUrl: string | null): Promise<string> {
   const comments = (detail.comments || [])
     .map((c: any) => `**${c.author.login}**: ${c.body}`)
     .join('\n\n')
@@ -93,13 +95,30 @@ Before doing anything, check the current state:
 `
     : ''
 
+  const existingPrRule = existingPrUrl ? '\n- Do NOT create a new pull request. Push to the existing branch.' : ''
+  const commentsSection = comments ? `## Comments\n\n${comments}` : ''
+
+  const tmpl = await getPromptTemplate('issue-worker')
+  if (tmpl) {
+    return renderTemplate(tmpl.template, {
+      repo,
+      number: String(number),
+      title: detail.title,
+      body: detail.body || 'No description provided.',
+      comments_section: commentsSection,
+      resume_context: resumeContext,
+      pr_instructions: prInstructions,
+      existing_pr_rule: existingPrRule,
+    })
+  }
+
   return `You are working on issue #${number} in ${repo}.
 
 ## Issue: ${detail.title}
 
 ${detail.body || 'No description provided.'}
 
-${comments ? `## Comments\n\n${comments}` : ''}
+${commentsSection}
 
 ${resumeContext}## Instructions
 
@@ -111,7 +130,7 @@ ${prInstructions}
 
 ## CRITICAL RULES
 - **NEVER run \`pnpm install\`, \`pnpm add\`, \`npm install\`, or any dependency installation command.** Dependencies are already installed. If something appears missing, work around it — do NOT install.
-- You are already on the correct branch. Do not create or switch branches.${existingPrUrl ? '\n- Do NOT create a new pull request. Push to the existing branch.' : ''}
+- You are already on the correct branch. Do not create or switch branches.${existingPrRule}
 - Do not ask questions — make reasonable decisions and proceed.`
 }
 

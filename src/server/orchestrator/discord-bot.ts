@@ -7,6 +7,8 @@ import { notify } from './notifier.js'
 import { spawnWorker } from './worker.js'
 import { getAllIssues } from './state.js'
 import { tryHeal } from './self-heal.js'
+import { getPromptTemplate } from './prompt-loader.js'
+import { renderTemplate } from '../lib/template.js'
 
 let client: Client | null = null
 let botStatus: 'offline' | 'online' | 'error' = 'offline'
@@ -224,20 +226,27 @@ async function fetchDMHistory(channel: DMChannel, beforeMessageId: string): Prom
   return messages
 }
 
-function chatWithClaude(message: string, username: string, history: Array<{ role: 'user' | 'assistant'; content: string }>): Promise<string> {
+async function chatWithClaude(message: string, username: string, history: Array<{ role: 'user' | 'assistant'; content: string }>): Promise<string> {
+  const config = loadConfig()
+
+  // Build conversation context from DM history
+  let conversationContext = ''
+  if (history.length > 0) {
+    conversationContext = '\n\n## Recent conversation history:\n' +
+      history.map(m => `${m.role === 'user' ? username : 'UltraDev'}: ${m.content}`).join('\n') +
+      '\n\n## Current message:\n'
+  }
+
+  const tmpl = await getPromptTemplate('discord-chat')
+  const systemPrompt = tmpl
+    ? renderTemplate(tmpl.template, {
+        username,
+        conversation_context: conversationContext,
+        message,
+      })
+    : `You are UltraDev, an autonomous AI developer bot. You're talking to ${username} in a DM. Be concise, helpful, and direct. No fluff.${conversationContext}${message}`
+
   return new Promise((resolve, reject) => {
-    const config = loadConfig()
-
-    // Build conversation context from DM history
-    let conversationContext = ''
-    if (history.length > 0) {
-      conversationContext = '\n\n## Recent conversation history:\n' +
-        history.map(m => `${m.role === 'user' ? username : 'UltraDev'}: ${m.content}`).join('\n') +
-        '\n\n## Current message:\n'
-    }
-
-    const systemPrompt = `You are UltraDev, an autonomous AI developer bot. You're talking to ${username} in a DM. Be concise, helpful, and direct. No fluff.${conversationContext}${message}`
-
     const child = spawn(config.claude.command, [
       ...config.claude.flags,
       '--print',

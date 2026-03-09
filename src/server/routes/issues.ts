@@ -1,7 +1,8 @@
 import { Router } from 'express'
 import { cached } from '../cache.js'
 import { loadConfig } from '../orchestrator/config.js'
-import { getOpenIssues, getPrsByRepos, type DbPr } from '../orchestrator/github-sync.js'
+import { getOpenIssues, getPrsByRepos } from '../orchestrator/github-sync.js'
+import type { GithubPr } from '@prisma/client'
 import { scoreIssue } from '../orchestrator/prioritize.js'
 import { getIssueState } from '../orchestrator/state.js'
 
@@ -27,15 +28,15 @@ interface OpenIssue {
   priority: number
 }
 
-function toLinkedPr(pr: DbPr): LinkedPr {
+function toLinkedPr(pr: GithubPr): LinkedPr {
   return {
     number: pr.number,
     url: `https://github.com/${pr.repo}/pull/${pr.number}`,
     state: pr.state,
-    ciStatus: pr.ci_status as LinkedPr['ciStatus'],
+    ciStatus: pr.ciStatus as LinkedPr['ciStatus'],
     mergeable: pr.mergeable === 'MERGEABLE',
     mergeableState: pr.mergeable || null,
-    reviewDecision: pr.review_decision || null,
+    reviewDecision: pr.reviewDecision || null,
   }
 }
 
@@ -70,7 +71,7 @@ async function fetchIssues(): Promise<OpenIssue[]> {
   // Build issue→PRs map from linked_issue_numbers
   const prMap = new Map<string, LinkedPr[]>()
   for (const pr of allPrs) {
-    const linkedNums: number[] = pr.linked_issue_numbers || []
+    const linkedNums: number[] = pr.linkedIssueNumbers || []
     for (const issueNum of linkedNums) {
       const key = `${pr.repo}#${issueNum}`
       const existing = prMap.get(key) || []
@@ -82,7 +83,7 @@ async function fetchIssues(): Promise<OpenIssue[]> {
   const results: OpenIssue[] = []
 
   for (const issue of issues) {
-    const labels: string[] = Array.isArray(issue.labels) ? issue.labels : []
+    const labels: string[] = Array.isArray(issue.labels) ? (issue.labels as string[]) : []
     const key = `${issue.repo}#${issue.number}`
     const linkedPrs = prMap.get(key) || []
     linkedPrs.sort((a, b) => a.number - b.number)
@@ -91,7 +92,7 @@ async function fetchIssues(): Promise<OpenIssue[]> {
     if (status === 'merged') continue
 
     const state = getIssueState(key)
-    const score = scoreIssue({ labels, createdAt: issue.created_at }, state)
+    const score = scoreIssue({ labels, createdAt: issue.createdAt?.toISOString() }, state)
 
     results.push({
       repo: issue.repo,

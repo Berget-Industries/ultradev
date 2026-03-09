@@ -1,7 +1,7 @@
 import { startGitHubSync, stopGitHubSync, updateGitHubSyncInterval, getGitHubSyncState, getDispatchState } from './github-sync.js'
 import { startDiscordBot, getDiscordBotStatus } from './discord-bot.js'
 import { startErrorWatcher, stopErrorWatcher, getErrorWatcherState, runErrorWatcher } from './error-watcher.js'
-import { loadConfig } from './config.js'
+import { loadConfig, refreshConfig } from './config.js'
 import { getMemoryState, getAllIssues, setIssueState } from './state.js'
 import { parseLogStats } from './log-parser.js'
 import { getRateLimitState, setOnResume } from './rate-limit.js'
@@ -12,7 +12,7 @@ import { promisify } from 'util'
 import { logActivity, getActivityLog } from './activity-log.js'
 import { MAINTENANCE_FILE } from '../paths.js'
 import { getAllowedRepos } from './allowed-repos.js'
-import db from '../db.js'
+import { prisma } from '../prisma.js'
 
 const execFileAsync = promisify(execFile)
 const startedAt = Date.now()
@@ -50,11 +50,12 @@ async function lookupPrByBranch(repo: string, branchName: string): Promise<strin
   }
 
   try {
-    const { rows } = await db.query(
-      'SELECT number FROM github_prs WHERE repo = $1 AND head_ref = $2 LIMIT 1',
-      [repo, branchName]
-    )
-    const prUrl = rows.length > 0 ? `https://github.com/${repo}/pull/${rows[0].number}` : null
+    const row = await prisma.githubPr.findFirst({
+      where: { repo, headRef: branchName, state: 'OPEN' },
+      select: { number: true },
+      orderBy: { updatedAt: 'desc' },
+    })
+    const prUrl = row ? `https://github.com/${repo}/pull/${row.number}` : null
     prLookupCache.set(cacheKey, { prUrl, fetchedAt: Date.now() })
     return prUrl
   } catch {
@@ -72,11 +73,11 @@ async function fetchCiChecks(repo: string, prNumber: number): Promise<CiCheck[]>
   }
 
   try {
-    const { rows } = await db.query(
-      'SELECT status_check_rollup FROM github_prs WHERE repo = $1 AND number = $2',
-      [repo, prNumber]
-    )
-    const rollup = rows[0]?.status_check_rollup || []
+    const row = await prisma.githubPr.findFirst({
+      where: { repo, number: prNumber },
+      select: { statusCheckRollup: true },
+    })
+    const rollup = row?.statusCheckRollup || []
     const checks: CiCheck[] = (Array.isArray(rollup) ? rollup : []).map((c: any) => ({
       name: c.name || c.context || 'unknown',
       status: c.status || c.state || 'UNKNOWN',
@@ -130,7 +131,8 @@ export {
 export async function startOrchestrator() {
   console.log('[ultradev] Starting orchestrator...')
 
-  const config = loadConfig()
+  // Prime config from settings table
+  const config = await refreshConfig()
   console.log(`[ultradev] GitHub user: ${config.github.username}`)
   console.log(`[ultradev] Repo dir: ${config.paths.repos}`)
   console.log(`[ultradev] Discord: ${config.discord.enabled ? 'enabled' : 'disabled'}`)
@@ -160,7 +162,7 @@ export async function startOrchestrator() {
 
 // --- Cached orchestrator state (avoid recomputing on every request/SSE tick) ---
 let orchestratorCache: { data: Awaited<ReturnType<typeof computeOrchestratorState>>; ts: number } | null = null
-const ORCHESTRATOR_CACHE_TTL = 5_000 // 5 seconds
+const ORCHESTRATOR_CACHE_TTL = 5_000
 
 async function computeOrchestratorState() {
   const config = loadConfig()

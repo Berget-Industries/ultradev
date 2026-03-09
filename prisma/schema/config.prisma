@@ -1,0 +1,23 @@
+model Setting {
+  key         String   @id
+  value       String   @default("")
+  type        String   @default("string")
+  label       String   @default("")
+  description String   @default("")
+  category    String   @default("general")
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@map("settings")
+}
+
+model PromptTemplate {
+  slug        String   @id
+  name        String   @default("")
+  description String   @default("")
+  template    String   @default("")
+  maxAttempts Int      @default(3) @map("max_attempts")
+  timeoutMs   Int      @default(1800000) @map("timeout_ms")
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@map("prompt_templates")
+}

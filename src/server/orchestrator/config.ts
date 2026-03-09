@@ -1,4 +1,5 @@
 import { join } from 'path'
+import { loadSettingsConfig, invalidateSettingsCache } from './settings.js'
 
 const HOME = process.env.HOME || '/home/' + (process.env.USER || 'user')
 
@@ -37,7 +38,10 @@ export interface Config {
   }
 }
 
-export function loadConfig(): Config {
+/** Cached config — loaded synchronously from the last async fetch. */
+let cachedConfig: Config | null = null
+
+function envFallbackConfig(): Config {
   const flags = process.env.ULTRADEV_CLAUDE_FLAGS
     ? process.env.ULTRADEV_CLAUDE_FLAGS.split(',').map(f => f.trim())
     : ['--dangerously-skip-permissions']
@@ -71,22 +75,34 @@ export function loadConfig(): Config {
   }
 }
 
-// Parse "channelId:authorId,channelId:authorId" into TriggerRule[]
+/**
+ * Synchronous loadConfig — returns cached DB config if available, else env fallback.
+ * Call refreshConfig() at startup to prime from DB.
+ */
+export function loadConfig(): Config {
+  return cachedConfig ?? envFallbackConfig()
+}
+
+/** Async: refresh config from the settings table. Called at startup + after settings save. */
+export async function refreshConfig(): Promise<Config> {
+  try {
+    cachedConfig = await loadSettingsConfig()
+  } catch {
+    cachedConfig = envFallbackConfig()
+  }
+  return cachedConfig
+}
+
+/** Invalidate config cache — clears both the settings cache and this module's cached config. */
+export function invalidateAllCaches() {
+  cachedConfig = null
+  invalidateSettingsCache()
+}
+
 function parseTriggerWhitelist(raw: string): TriggerRule[] {
   if (!raw.trim()) return []
   return raw.split(',').map(entry => {
     const [channelId, authorId] = entry.trim().split(':')
     return { channelId, authorId }
   }).filter(r => r.channelId && r.authorId)
-}
-
-// Runtime override for poll interval (used by dashboard API)
-let runtimePollIntervalMs: number | null = null
-
-export function setRuntimePollInterval(ms: number) {
-  runtimePollIntervalMs = ms
-}
-
-export function getRuntimePollInterval(): number | null {
-  return runtimePollIntervalMs
 }

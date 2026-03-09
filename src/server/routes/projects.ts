@@ -1,93 +1,112 @@
 import { Router } from 'express'
-import db from '../db.js'
+import { prisma } from '../prisma.js'
+import { toSnakeCase } from '../lib/case.js'
+import type { ProjectStatus, Project, ProjectCronjob } from '@prisma/client'
 
 const router = Router()
 
+const VALID_PROJECT_STATUSES = ['active', 'paused', 'archived'] as const
+
+type ProjectWithCronjobs = Project & { projectCronjobs: ProjectCronjob[] }
+
+function projectWithCronjobIds(project: ProjectWithCronjobs) {
+  const { projectCronjobs, ...rest } = project
+  return {
+    ...toSnakeCase(rest),
+    cronjob_ids: projectCronjobs.map((pc) => pc.cronjobId),
+  }
+}
+
 router.get('/', async (_req, res) => {
-  const { rows } = await db.query(`
-    SELECT p.*, STRING_AGG(pc.cronjob_id::text, ',') as cronjob_ids
-    FROM projects p
-    LEFT JOIN project_cronjobs pc ON pc.project_id = p.id
-    GROUP BY p.id
-    ORDER BY p.created_at DESC
-  `)
-  const result = rows.map(r => ({
-    ...r,
-    cronjob_ids: r.cronjob_ids ? r.cronjob_ids.split(',').map(Number) : [],
-  }))
-  res.json(result)
+  const rows = await prisma.project.findMany({
+    include: { projectCronjobs: true },
+    orderBy: { createdAt: 'desc' },
+  })
+  res.json(rows.map(projectWithCronjobIds))
 })
 
 router.get('/:id', async (req, res) => {
-  const { rows: [row] } = await db.query('SELECT * FROM projects WHERE id = $1', [req.params.id])
+  const row = await prisma.project.findUnique({
+    where: { id: parseInt(req.params.id) },
+    include: { projectCronjobs: true },
+  })
   if (!row) return res.status(404).json({ error: 'Not found' })
-  const { rows: cronjobRows } = await db.query(
-    'SELECT cronjob_id FROM project_cronjobs WHERE project_id = $1', [req.params.id]
-  )
-  res.json({ ...row, cronjob_ids: cronjobRows.map(r => r.cronjob_id) })
+  res.json(projectWithCronjobIds(row))
 })
 
 router.post('/', async (req, res) => {
   const { name, repo_url, description, status, cronjob_ids } = req.body
   if (!name) return res.status(400).json({ error: 'name is required' })
-  const client = await db.connect()
-  try {
-    await client.query('BEGIN')
-    const { rows: [inserted] } = await client.query(
-      'INSERT INTO projects (name, repo_url, description, status) VALUES ($1, $2, $3, $4) RETURNING *',
-      [name, repo_url || '', description || '', status || 'active']
-    )
-    if (Array.isArray(cronjob_ids)) {
-      for (const cid of cronjob_ids) {
-        await client.query('INSERT INTO project_cronjobs (project_id, cronjob_id) VALUES ($1, $2)', [inserted.id, cid])
-      }
+
+  const result = await prisma.$transaction(async (tx) => {
+    const project = await tx.project.create({
+      data: {
+        name,
+        repoUrl: repo_url || '',
+        description: description || '',
+        status: (VALID_PROJECT_STATUSES as readonly string[]).includes(status) ? status as ProjectStatus : 'active',
+      },
+    })
+    if (Array.isArray(cronjob_ids) && cronjob_ids.length > 0) {
+      await tx.projectCronjob.createMany({
+        data: cronjob_ids.map((cid: number) => ({
+          projectId: project.id,
+          cronjobId: cid,
+        })),
+      })
     }
-    await client.query('COMMIT')
-    res.status(201).json({ ...inserted, cronjob_ids: cronjob_ids || [] })
-  } catch (err) {
-    await client.query('ROLLBACK')
-    throw err
-  } finally {
-    client.release()
-  }
+    return { ...toSnakeCase(project), cronjob_ids: cronjob_ids || [] }
+  })
+
+  res.status(201).json(result)
 })
 
 router.put('/:id', async (req, res) => {
   const { name, repo_url, description, status, cronjob_ids } = req.body
-  const client = await db.connect()
+  const id = parseInt(req.params.id)
+
   try {
-    await client.query('BEGIN')
-    const { rows: [row] } = await client.query(
-      `UPDATE projects SET name = COALESCE($1, name), repo_url = COALESCE($2, repo_url),
-       description = COALESCE($3, description), status = COALESCE($4, status),
-       updated_at = NOW() WHERE id = $5 RETURNING *`,
-      [name, repo_url, description, status, req.params.id]
-    )
-    if (!row) {
-      await client.query('ROLLBACK')
-      return res.status(404).json({ error: 'Not found' })
-    }
-    if (Array.isArray(cronjob_ids)) {
-      await client.query('DELETE FROM project_cronjobs WHERE project_id = $1', [req.params.id])
-      for (const cid of cronjob_ids) {
-        await client.query('INSERT INTO project_cronjobs (project_id, cronjob_id) VALUES ($1, $2)', [req.params.id, cid])
+    const result = await prisma.$transaction(async (tx) => {
+      const project = await tx.project.update({
+        where: { id },
+        data: {
+          ...(name !== undefined && { name }),
+          ...(repo_url !== undefined && { repoUrl: repo_url }),
+          ...(description !== undefined && { description }),
+          ...(status !== undefined && (VALID_PROJECT_STATUSES as readonly string[]).includes(status) && { status: status as ProjectStatus }),
+        },
+      })
+      if (Array.isArray(cronjob_ids)) {
+        await tx.projectCronjob.deleteMany({ where: { projectId: id } })
+        if (cronjob_ids.length > 0) {
+          await tx.projectCronjob.createMany({
+            data: cronjob_ids.map((cid: number) => ({
+              projectId: id,
+              cronjobId: cid,
+            })),
+          })
+        }
       }
-    }
-    await client.query('COMMIT')
-    const { rows: cronjobRows } = await db.query(
-      'SELECT cronjob_id FROM project_cronjobs WHERE project_id = $1', [req.params.id]
-    )
-    res.json({ ...row, cronjob_ids: cronjobRows.map(r => r.cronjob_id) })
-  } catch (err) {
-    await client.query('ROLLBACK')
+      const fresh = await tx.project.findUnique({
+        where: { id },
+        include: { projectCronjobs: true },
+      })
+      if (!fresh) throw Object.assign(new Error('Not found'), { code: 'P2025' })
+      return projectWithCronjobIds(fresh)
+    })
+    res.json(result)
+  } catch (err: any) {
+    if (err.code === 'P2025') return res.status(404).json({ error: 'Not found' })
     throw err
-  } finally {
-    client.release()
   }
 })
 
 router.delete('/:id', async (req, res) => {
-  await db.query('DELETE FROM projects WHERE id = $1', [req.params.id])
+  try {
+    await prisma.project.delete({ where: { id: parseInt(req.params.id) } })
+  } catch (err: any) {
+    if (err.code !== 'P2025') throw err
+  }
   res.json({ ok: true })
 })
 

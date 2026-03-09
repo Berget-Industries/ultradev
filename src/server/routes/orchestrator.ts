@@ -6,7 +6,8 @@ import {
   startGitHubSync, stopGitHubSync, updateGitHubSyncInterval,
   startErrorWatcher, stopErrorWatcher, runErrorWatcher,
 } from '../orchestrator/index.js'
-import { setRuntimePollInterval } from '../orchestrator/config.js'
+import { refreshConfig, invalidateAllCaches } from '../orchestrator/config.js'
+import { prisma } from '../prisma.js'
 import { getIssueState, setIssueState } from '../orchestrator/state.js'
 import { parseLogStats } from '../orchestrator/log-parser.js'
 
@@ -62,8 +63,20 @@ router.put('/jobs/:name', async (req, res) => {
       }
     }
     if (typeof intervalMs === 'number' && intervalMs > 0) {
-      setRuntimePollInterval(intervalMs)
-      updateGitHubSyncInterval(intervalMs)
+      // Persist to settings table
+      try {
+        await prisma.setting.update({
+          where: { key: 'github.poll_interval_ms' },
+          data: { value: String(intervalMs) },
+        })
+        invalidateAllCaches()
+        await refreshConfig()
+        updateGitHubSyncInterval(intervalMs)
+      } catch (err: any) {
+        console.error('[orchestrator] Failed to persist poll interval:', err.message)
+        res.status(500).json({ error: 'Failed to persist poll interval' })
+        return
+      }
     }
   } else if (name === 'error-watcher') {
     if (typeof enabled === 'boolean') {

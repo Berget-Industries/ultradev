@@ -1,58 +1,96 @@
 import { Router } from 'express'
-import db from '../db.js'
+import { prisma } from '../prisma.js'
+import { toSnakeCase } from '../lib/case.js'
+import type { Prisma, TaskColumn } from '@prisma/client'
 
 const router = Router()
 
+const validColumns = new Set(['backlog', 'assigned', 'working', 'pr', 'merged'])
+
+function parseIntStrict(raw: string): number | null {
+  if (!/^\d+$/.test(raw)) return null
+  return parseInt(raw, 10)
+}
+
 router.get('/', async (req, res) => {
   const { project_id, column_id } = req.query
-  const conditions: string[] = []
-  const params: unknown[] = []
-  let paramIdx = 1
-
+  const where: Prisma.TaskWhereInput = {}
   if (project_id) {
-    conditions.push(`project_id = $${paramIdx++}`)
-    params.push(project_id)
+    const pid = parseIntStrict(project_id as string)
+    if (pid === null) return res.status(400).json({ error: 'Invalid project_id' })
+    where.projectId = pid
   }
   if (column_id) {
-    conditions.push(`column_id = $${paramIdx++}`)
-    params.push(column_id)
+    if (!validColumns.has(column_id as string)) return res.status(400).json({ error: 'Invalid column_id' })
+    where.columnId = column_id as TaskColumn
   }
 
-  let sql = 'SELECT * FROM tasks'
-  if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ')
-  sql += ' ORDER BY position ASC, id ASC'
-
-  const { rows } = await db.query(sql, params)
-  res.json(rows)
+  const rows = await prisma.task.findMany({
+    where,
+    orderBy: [{ position: 'asc' }, { id: 'asc' }],
+  })
+  res.json(toSnakeCase(rows))
 })
 
 router.post('/', async (req, res) => {
   const { title, description, column_id, github_url, project_id } = req.body
   if (!title) return res.status(400).json({ error: 'title is required' })
 
-  const col = column_id || 'backlog'
-  const { rows: [last] } = await db.query(
-    'SELECT MAX(position) as "maxPos" FROM tasks WHERE column_id = $1', [col]
-  )
-  const position = (last?.maxPos ?? 0) + 1
+  const col = (column_id || 'backlog') as string
+  if (!validColumns.has(col)) {
+    return res.status(400).json({ error: `Invalid column_id. Must be one of: ${[...validColumns].join(', ')}` })
+  }
 
-  const { rows: [row] } = await db.query(
-    'INSERT INTO tasks (title, description, column_id, position, github_url, project_id) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
-    [title, description || '', col, position, github_url || '', project_id || null]
-  )
-  res.status(201).json(row)
+  const agg = await prisma.task.aggregate({
+    where: { columnId: col as TaskColumn },
+    _max: { position: true },
+  })
+  const position = (agg._max.position ?? 0) + 1
+
+  const parsedProjectId = project_id == null ? null : parseIntStrict(String(project_id))
+  if (project_id != null && parsedProjectId === null) {
+    return res.status(400).json({ error: 'Invalid project_id' })
+  }
+
+  const row = await prisma.task.create({
+    data: {
+      title,
+      description: description || '',
+      columnId: col as TaskColumn,
+      position,
+      githubUrl: github_url || '',
+      projectId: parsedProjectId,
+    },
+  })
+  res.status(201).json(toSnakeCase(row))
 })
 
 router.put('/:id', async (req, res) => {
   const { title, description, github_url, project_id } = req.body
-  const { rows: [row] } = await db.query(
-    `UPDATE tasks SET title = COALESCE($1, title), description = COALESCE($2, description),
-     github_url = COALESCE($3, github_url), project_id = COALESCE($4, project_id),
-     updated_at = NOW() WHERE id = $5 RETURNING *`,
-    [title, description, github_url, project_id, req.params.id]
-  )
-  if (!row) return res.status(404).json({ error: 'Not found' })
-  res.json(row)
+  const id = parseIntStrict(req.params.id)
+  if (id === null) return res.status(400).json({ error: 'Invalid id' })
+  const parsedProjectId =
+    project_id === undefined ? undefined :
+    project_id === null ? null :
+    parseIntStrict(String(project_id))
+  if (project_id !== undefined && project_id !== null && parsedProjectId === null) {
+    return res.status(400).json({ error: 'Invalid project_id' })
+  }
+  try {
+    const row = await prisma.task.update({
+      where: { id },
+      data: {
+        ...(title !== undefined && { title }),
+        ...(description !== undefined && { description }),
+        ...(github_url !== undefined && { githubUrl: github_url }),
+        ...(parsedProjectId !== undefined && { projectId: parsedProjectId }),
+      },
+    })
+    res.json(toSnakeCase(row))
+  } catch (err: any) {
+    if (err.code === 'P2025') return res.status(404).json({ error: 'Not found' })
+    throw err
+  }
 })
 
 router.put('/:id/move', async (req, res) => {
@@ -60,16 +98,35 @@ router.put('/:id/move', async (req, res) => {
   if (!column_id || position === undefined) {
     return res.status(400).json({ error: 'column_id and position are required' })
   }
-  const { rows: [row] } = await db.query(
-    `UPDATE tasks SET column_id = $1, position = $2, updated_at = NOW() WHERE id = $3 RETURNING *`,
-    [column_id, position, req.params.id]
-  )
-  if (!row) return res.status(404).json({ error: 'Not found' })
-  res.json(row)
+  if (!validColumns.has(column_id as string)) {
+    return res.status(400).json({ error: `Invalid column_id. Must be one of: ${[...validColumns].join(', ')}` })
+  }
+  const pos = Number(position)
+  if (!Number.isInteger(pos) || pos < 0) {
+    return res.status(400).json({ error: 'position must be a non-negative integer' })
+  }
+  const moveId = parseIntStrict(req.params.id)
+  if (moveId === null) return res.status(400).json({ error: 'Invalid id' })
+  try {
+    const row = await prisma.task.update({
+      where: { id: moveId },
+      data: { columnId: column_id as TaskColumn, position: pos },
+    })
+    res.json(toSnakeCase(row))
+  } catch (err: any) {
+    if (err.code === 'P2025') return res.status(404).json({ error: 'Not found' })
+    throw err
+  }
 })
 
 router.delete('/:id', async (req, res) => {
-  await db.query('DELETE FROM tasks WHERE id = $1', [req.params.id])
+  const delId = parseIntStrict(req.params.id)
+  if (delId === null) return res.status(400).json({ error: 'Invalid id' })
+  try {
+    await prisma.task.delete({ where: { id: delId } })
+  } catch (err: any) {
+    if (err.code !== 'P2025') throw err
+  }
   res.json({ ok: true })
 })
 

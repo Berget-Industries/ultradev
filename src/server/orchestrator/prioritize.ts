@@ -48,8 +48,7 @@ export interface ScoredIssue {
 // ---------------------------------------------------------------------------
 interface ScorableIssue {
   labels?: (string | { name?: string })[]
-  createdAt?: string
-  created_at?: string
+  createdAt?: string | Date
   comments?: { totalCount?: number } | number
 }
 
@@ -70,7 +69,7 @@ export function scoreIssue(issue: ScorableIssue, state: IssueState | null): Scor
 
   // --- Freshness: recently created issues get a boost ---
   let freshness = 0
-  const createdAt = (issue.createdAt || issue.created_at) ? new Date((issue.createdAt || issue.created_at)!).getTime() : 0
+  const createdAt = issue.createdAt ? new Date(issue.createdAt).getTime() : 0
   if (createdAt > 0) {
     const ageMs = Date.now() - createdAt
     if (ageMs < FRESHNESS_WINDOW_MS) {

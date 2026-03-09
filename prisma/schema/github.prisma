@@ -1,0 +1,45 @@
+model GithubIssue {
+  id        Int      @id @default(autoincrement())
+  repo      String
+  number    Int
+  title     String   @default("")
+  body      String?  @default("")
+  state     String   @default("OPEN")
+  labels    Json     @default("[]")
+  assignee  String   @default("")
+  createdAt DateTime? @map("created_at") @db.Timestamptz
+  updatedAt DateTime? @map("updated_at") @db.Timestamptz
+  syncedAt  DateTime @default(now()) @map("synced_at") @db.Timestamptz
+
+  @@unique([repo, number])
+  @@index([assignee, state], map: "idx_github_issues_assignee_state")
+  @@map("github_issues")
+}
+
+model GithubPr {
+  id                 Int       @id @default(autoincrement())
+  repo               String
+  number             Int
+  title              String    @default("")
+  body               String?   @default("")
+  state              String    @default("OPEN")
+  headRef            String    @default("") @map("head_ref")
+  baseRef            String    @default("") @map("base_ref")
+  author             String    @default("")
+  mergeable          String    @default("UNKNOWN")
+  reviewDecision     String    @default("") @map("review_decision")
+  ciStatus           String    @default("none") @map("ci_status")
+  statusCheckRollup  Json?     @default("[]") @map("status_check_rollup")
+  linkedIssueNumbers Int[]     @default([]) @map("linked_issue_numbers")
+  latestReviewAt     DateTime? @map("latest_review_at") @db.Timestamptz
+  createdAt          DateTime? @map("created_at") @db.Timestamptz
+  updatedAt          DateTime? @map("updated_at") @db.Timestamptz
+  syncedAt           DateTime  @default(now()) @map("synced_at") @db.Timestamptz
+
+  @@unique([repo, number])
+  @@index([repo, headRef, state], map: "idx_github_prs_repo_head_ref_state")
+  @@index([author, state], map: "idx_github_prs_author_state")
+  @@index([author, state, reviewDecision], map: "idx_github_prs_author_state_review")
+  @@index([author, state, mergeable], map: "idx_github_prs_author_state_mergeable")
+  @@map("github_prs")
+}

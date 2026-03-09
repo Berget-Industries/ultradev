@@ -4,6 +4,8 @@ import { join } from 'path'
 import type { Config } from './config.js'
 import type { WorkerResult } from './worker.js'
 import { handleRateLimitEvent } from './rate-limit.js'
+import { getPromptTemplate } from './prompt-loader.js'
+import { renderTemplate } from '../lib/template.js'
 
 interface ConflictPr {
   number: number
@@ -32,7 +34,7 @@ export async function spawnConflictWorker(
     return { success: false, error: `Branch setup failed: ${err.message}`, partial: false, logFile: '' }
   }
 
-  const prompt = buildConflictPrompt(repo, pr, headRefName, baseRefName)
+  const prompt = await buildConflictPrompt(repo, pr, headRefName, baseRefName)
 
   if (!logFile) logFile = join(config.paths.logs, `conflict_${pr.number}-${Date.now()}.log`)
   mkdirSync(config.paths.logs, { recursive: true })
@@ -133,12 +135,32 @@ function getDefaultBranch(repoDir: string): string {
   }
 }
 
-function buildConflictPrompt(
+async function buildConflictPrompt(
   repo: string,
   pr: ConflictPr,
   headRefName: string,
   baseRefName: string,
-): string {
+): Promise<string> {
+  let tmpl: Awaited<ReturnType<typeof getPromptTemplate>> = null
+  try {
+    tmpl = await getPromptTemplate('conflict-resolver')
+  } catch (err: any) {
+    console.error('[conflict-worker] Failed to load prompt template:', err.message)
+  }
+  if (tmpl) {
+    try {
+      return renderTemplate(tmpl.template, {
+        repo,
+        pr_number: String(pr.number),
+        pr_title: pr.title,
+        head_ref: headRefName,
+        base_ref: baseRefName,
+      })
+    } catch (err: any) {
+      console.error('[conflict-worker] Failed to render prompt template:', err.message)
+    }
+  }
+
   return `You are resolving merge conflicts on PR #${pr.number} in ${repo}.
 
 ## PR: ${pr.title}

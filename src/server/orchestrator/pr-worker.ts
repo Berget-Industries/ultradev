@@ -4,6 +4,8 @@ import { join } from 'path'
 import type { Config } from './config.js'
 import type { WorkerResult } from './worker.js'
 import { handleRateLimitEvent } from './rate-limit.js'
+import { getPromptTemplate } from './prompt-loader.js'
+import { renderTemplate } from '../lib/template.js'
 
 interface PrDetail {
   number: number
@@ -50,7 +52,7 @@ export async function spawnPrWorker(
     return { success: false, error: `Branch setup failed: ${err.message}`, partial: false, logFile: '' }
   }
 
-  const prompt = buildPrPrompt(repo, pr, prBranch, reviews, reviewComments)
+  const prompt = await buildPrPrompt(repo, pr, prBranch, reviews, reviewComments)
 
   if (!logFile) logFile = join(config.paths.logs, `pr_${pr.number}-fix-${Date.now()}.log`)
   mkdirSync(config.paths.logs, { recursive: true })
@@ -154,13 +156,40 @@ function getDefaultBranch(repoDir: string): string {
   }
 }
 
-function buildPrPrompt(
+async function buildPrPrompt(
   repo: string,
   pr: PrDetail,
   prBranch: string,
   reviews: Review[],
   reviewComments: ReviewComment[],
-): string {
+): Promise<string> {
+  let reviewFeedback = ''
+  for (const review of reviews) {
+    reviewFeedback += `### ${review.author?.login || 'Reviewer'} (${review.state}):\n${review.body || 'No comment.'}\n\n`
+  }
+
+  let inlineComments = ''
+  if (reviewComments.length > 0) {
+    inlineComments = `### Inline Comments:\n\n`
+    for (const c of reviewComments) {
+      inlineComments += `- **${c.author}** on \`${c.path}\`${c.line ? ` line ${c.line}` : ''}:\n  ${c.body}\n\n`
+    }
+  }
+
+  const tmpl = await getPromptTemplate('pr-review')
+  if (tmpl) {
+    return renderTemplate(tmpl.template, {
+      repo,
+      pr_number: String(pr.number),
+      pr_title: pr.title,
+      pr_body: pr.body || 'No description.',
+      review_feedback: reviewFeedback,
+      inline_comments: inlineComments,
+      pr_branch: prBranch,
+      base_ref: pr.baseRefName,
+    })
+  }
+
   let prompt = `You are addressing review feedback on PR #${pr.number} in ${repo}.
 
 ## Original PR: ${pr.title}
@@ -171,15 +200,10 @@ ${pr.body || 'No description.'}
 
 `
 
-  for (const review of reviews) {
-    prompt += `### ${review.author?.login || 'Reviewer'} (${review.state}):\n${review.body || 'No comment.'}\n\n`
-  }
+  prompt += reviewFeedback
 
-  if (reviewComments.length > 0) {
-    prompt += `### Inline Comments:\n\n`
-    for (const c of reviewComments) {
-      prompt += `- **${c.author}** on \`${c.path}\`${c.line ? ` line ${c.line}` : ''}:\n  ${c.body}\n\n`
-    }
+  if (inlineComments) {
+    prompt += inlineComments
   }
 
   prompt += `## Branch Setup

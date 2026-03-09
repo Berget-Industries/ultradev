@@ -1,0 +1,79 @@
+enum ProjectStatus {
+  active
+  paused
+  archived
+
+  @@map("project_status")
+}
+
+enum TaskColumn {
+  backlog
+  assigned
+  working
+  pr
+  merged
+
+  @@map("task_column")
+}
+
+enum CronjobStatus {
+  active
+  paused
+
+  @@map("cronjob_status")
+}
+
+model Project {
+  id              Int              @id @default(autoincrement())
+  name            String
+  repoUrl         String           @default("") @map("repo_url")
+  description     String           @default("")
+  status          ProjectStatus    @default(active)
+  createdAt       DateTime         @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime         @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+  tasks           Task[]
+  projectCronjobs ProjectCronjob[]
+
+  @@map("projects")
+}
+
+model Task {
+  id          Int        @id @default(autoincrement())
+  title       String
+  description String     @default("")
+  columnId    TaskColumn @default(backlog) @map("column_id")
+  position    Float      @default(0)
+  githubUrl   String     @default("") @map("github_url")
+  projectId   Int?       @map("project_id")
+  createdAt   DateTime   @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime   @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+  project     Project?   @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  @@map("tasks")
+}
+
+model Cronjob {
+  id              Int              @id @default(autoincrement())
+  name            String
+  schedule        String           @default("* * * * *")
+  description     String           @default("")
+  command         String           @default("")
+  status          CronjobStatus    @default(active)
+  lastRun         DateTime?        @map("last_run") @db.Timestamptz
+  nextRun         DateTime?        @map("next_run") @db.Timestamptz
+  createdAt       DateTime         @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime         @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+  projectCronjobs ProjectCronjob[]
+
+  @@map("cronjobs")
+}
+
+model ProjectCronjob {
+  projectId Int     @map("project_id")
+  cronjobId Int     @map("cronjob_id")
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  cronjob   Cronjob @relation(fields: [cronjobId], references: [id], onDelete: Cascade)
+
+  @@id([projectId, cronjobId])
+  @@map("project_cronjobs")
+}
