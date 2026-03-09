@@ -15,7 +15,7 @@ const CACHE_TTL = 10 * 60 * 1000 // 10 minutes
 // ---------------------------------------------------------------------------
 
 interface UpdateStep {
-  step: 'fetch' | 'checkout' | 'install' | 'restart'
+  step: 'fetch' | 'checkout' | 'install' | 'migrate' | 'restart'
   status: 'pending' | 'in_progress' | 'done' | 'error'
   message: string
 }
@@ -34,6 +34,7 @@ function makeSteps(): UpdateStep[] {
     { step: 'fetch', status: 'pending', message: 'Fetch tags' },
     { step: 'checkout', status: 'pending', message: 'Checkout release' },
     { step: 'install', status: 'pending', message: 'Install dependencies' },
+    { step: 'migrate', status: 'pending', message: 'Run database migrations' },
     { step: 'restart', status: 'pending', message: 'Restart server' },
   ]
 }
@@ -100,7 +101,22 @@ async function runUpdate(latestTag: string) {
     })
     setStepStatus('install', 'done', 'Dependencies installed')
 
-    // Step 4 — restart
+    // Step 4 — database migrations + seed
+    setStepStatus('migrate', 'in_progress', 'Pushing schema changes…')
+    await execFileAsync('pnpm', ['exec', 'prisma', 'db', 'push', '--skip-generate'], {
+      timeout: 60_000,
+      encoding: 'utf-8',
+      env: { ...process.env },
+    })
+    setStepStatus('migrate', 'in_progress', 'Seeding database…')
+    await execFileAsync('pnpm', ['exec', 'prisma', 'db', 'seed'], {
+      timeout: 60_000,
+      encoding: 'utf-8',
+      env: { ...process.env },
+    })
+    setStepStatus('migrate', 'done', 'Database updated')
+
+    // Step 5 — restart
     setStepStatus('restart', 'in_progress', 'Restarting server…')
     setStepStatus('restart', 'done', 'Restart initiated')
     // Reset active flag so a stale state doesn't block future updates
