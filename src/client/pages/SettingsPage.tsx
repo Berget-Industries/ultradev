@@ -123,6 +123,15 @@ function ConfigurationSection({
         }
       }
       await api.put('/settings', payload)
+      // Reset saved secrets to empty so hasChanges recalculates correctly
+      const savedSecretKeys = Object.values(settings).flat().filter(e => e.type === 'secret' && payload[e.key] !== undefined).map(e => e.key)
+      if (savedSecretKeys.length > 0) {
+        setValues((prev) => {
+          const next = { ...prev }
+          for (const key of savedSecretKeys) next[key] = ''
+          return next
+        })
+      }
       setToast({ message: 'Settings saved successfully', type: 'success' })
       onSaved()
       setTimeout(() => setToast(null), 3000)

@@ -73,7 +73,7 @@ async function attemptFix(component: string, error: string, context: { file?: st
     const logFile = join(config.paths.logs, `heal_${Date.now()}.log`)
     mkdirSync(config.paths.logs, { recursive: true })
 
-    const fileSection = context.file ? `## File: ${context.file}` : ''
+    const fileSection = `## File: ${context.file}`
     const extraContext = context.extra ? `## Context: ${context.extra}` : ''
 
     let tmpl: Awaited<ReturnType<typeof getPromptTemplate>> = null

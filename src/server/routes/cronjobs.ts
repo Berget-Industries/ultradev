@@ -12,6 +12,14 @@ function parseId(raw: string): number | null {
   return parseInt(raw, 10)
 }
 
+function parseDateField(raw: unknown): Date | null | undefined {
+  if (raw === undefined) return undefined
+  if (raw === null) return null
+  const d = new Date(raw as string)
+  if (isNaN(d.getTime())) return undefined // signals invalid
+  return d
+}
+
 router.get('/', async (_req, res) => {
   const rows = await prisma.cronjob.findMany({ orderBy: { createdAt: 'desc' } })
   res.json(toSnakeCase(rows))
@@ -43,6 +51,12 @@ router.put('/:id', async (req, res) => {
   if (status !== undefined && !VALID_STATUSES.includes(status as CronjobStatus)) {
     return res.status(400).json({ error: `Invalid status. Must be one of: ${VALID_STATUSES.join(', ')}` })
   }
+  if (last_run !== undefined && last_run !== null && parseDateField(last_run) === undefined) {
+    return res.status(400).json({ error: 'Invalid last_run date' })
+  }
+  if (next_run !== undefined && next_run !== null && parseDateField(next_run) === undefined) {
+    return res.status(400).json({ error: 'Invalid next_run date' })
+  }
   try {
     const row = await prisma.cronjob.update({
       where: { id },
@@ -52,16 +66,13 @@ router.put('/:id', async (req, res) => {
         ...(description !== undefined && { description }),
         ...(command !== undefined && { command }),
         ...(status !== undefined && { status: status as CronjobStatus }),
-        ...(last_run !== undefined && last_run !== null && { lastRun: (() => { const d = new Date(last_run); if (isNaN(d.getTime())) throw Object.assign(new Error('Invalid last_run date'), { status: 400 }); return d })() }),
-        ...(last_run === null && { lastRun: null }),
-        ...(next_run !== undefined && next_run !== null && { nextRun: (() => { const d = new Date(next_run); if (isNaN(d.getTime())) throw Object.assign(new Error('Invalid next_run date'), { status: 400 }); return d })() }),
-        ...(next_run === null && { nextRun: null }),
+        ...(last_run !== undefined && { lastRun: parseDateField(last_run) as Date | null }),
+        ...(next_run !== undefined && { nextRun: parseDateField(next_run) as Date | null }),
       },
     })
     res.json(toSnakeCase(row))
   } catch (err: any) {
     if (err.code === 'P2025') return res.status(404).json({ error: 'Not found' })
-    if (err.status === 400) return res.status(400).json({ error: err.message })
     throw err
   }
 })

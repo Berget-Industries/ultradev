@@ -566,13 +566,19 @@ export async function hasPendingWork(): Promise<boolean> {
     return true
   }
 
+  const maxIssueAttempts = MAX_ISSUE_ATTEMPTS + MAX_CI_FIX_ATTEMPTS
   const dbIssues = await getOpenIssues(username)
   for (const i of dbIssues) {
     if (!(await isRepoAllowed(i.repo))) continue
     const key = `${i.repo}#${i.number}`
     const state = getIssueState(key)
-    if (state?.status === 'done' || state?.status === 'in_progress') continue
-    if ((state?.attempts || 0) >= MAX_ISSUE_ATTEMPTS) continue
+    if (state?.status === 'done') {
+      const failingPrs = await getFailingPrsForIssue(username, i.repo, i.number)
+      if (failingPrs.length > 0 && (state.attempts || 0) < maxIssueAttempts) return true
+      continue
+    }
+    if (state?.status === 'in_progress') continue
+    if ((state?.attempts || 0) >= maxIssueAttempts) continue
     return true
   }
 

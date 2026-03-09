@@ -68,7 +68,7 @@ router.put('/:id', async (req, res) => {
         ...(title !== undefined && { title }),
         ...(description !== undefined && { description }),
         ...(github_url !== undefined && { githubUrl: github_url }),
-        ...(project_id !== undefined && { projectId: project_id }),
+        ...(project_id !== undefined && { projectId: project_id === null ? null : (parseIntStrict(String(project_id)) ?? undefined) }),
       },
     })
     res.json(toSnakeCase(row))
