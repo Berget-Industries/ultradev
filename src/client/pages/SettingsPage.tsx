@@ -354,11 +354,17 @@ function CategorySection({
 
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-lg font-semibold capitalize">{category}</h2>
-        <p className="text-sm text-muted-foreground">
-          {entries.length} setting{entries.length !== 1 ? 's' : ''}
-        </p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-lg font-semibold capitalize">{category}</h2>
+          <p className="text-sm text-muted-foreground">
+            {entries.length} setting{entries.length !== 1 ? 's' : ''}
+          </p>
+        </div>
+        <Button onClick={onSave} disabled={saving || !hasChanges} size="sm">
+          <Save className="h-4 w-4" />
+          {saving ? 'Saving...' : 'Save'}
+        </Button>
       </div>
 
       <div className="space-y-5">
@@ -374,13 +380,6 @@ function CategorySection({
             <div className={entry.type === 'boolean' ? 'shrink-0' : 'max-w-md'}>{renderInput(entry)}</div>
           </div>
         ))}
-      </div>
-
-      <div className="flex justify-end pt-2">
-        <Button onClick={onSave} disabled={saving || !hasChanges}>
-          <Save className="h-4 w-4" />
-          {saving ? 'Saving...' : 'Save Settings'}
-        </Button>
       </div>
     </div>
   )
