@@ -37,6 +37,11 @@ model Project {
   notifyOnSuccess     Boolean? @map("notify_on_success")
   notifyOnFailure     Boolean? @map("notify_on_failure")
 
+  // Per-project error watcher
+  errorWatcherEnabled Boolean  @default(false) @map("error_watcher_enabled")
+  errorWatcherChannel String?  @map("error_watcher_channel")
+  errorWatcherLabels  String?  @map("error_watcher_labels")
+
   createdAt       DateTime         @default(now()) @map("created_at") @db.Timestamptz
   updatedAt       DateTime         @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
   tasks           Task[]

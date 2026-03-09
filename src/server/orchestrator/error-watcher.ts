@@ -7,6 +7,8 @@ import { getDiscordClient, dmOwner } from './discord-bot.js'
 import { logActivity } from './activity-log.js'
 import { getPromptTemplate } from './prompt-loader.js'
 import { renderTemplate } from '../lib/template.js'
+import { prisma } from '../prisma.js'
+import { resolveProjectConfig } from '../lib/project-config.js'
 
 const dataDir = process.env.ULTRADEV_DATA_DIR || join(process.env.HOME!, '.ultradev')
 const STATE_PATH = join(dataDir, 'error-watcher-state.json')
@@ -60,16 +62,17 @@ export function startErrorWatcher() {
     console.log('[error-watcher] Disabled')
     return
   }
-  if (!config.errorWatcher.targetRepo) {
-    console.log('[error-watcher] No target repo configured, skipping')
-    return
-  }
-  if (config.discord.triggerWhitelist.length === 0) {
-    console.log('[error-watcher] No channels to watch, skipping')
-    return
+
+  // Allow startup if either global targetRepo is set OR per-project watchers may exist
+  // The actual project check happens at runtime in runErrorWatcher()
+  if (!config.errorWatcher.targetRepo && config.discord.triggerWhitelist.length === 0) {
+    // Still start — per-project watchers may be configured in the DB
+    console.log('[error-watcher] No global target/channels, will check per-project configs')
+  } else if (config.errorWatcher.targetRepo) {
+    console.log(`[error-watcher] Global target: ${config.errorWatcher.targetRepo}, ${config.discord.triggerWhitelist.length} channel(s)`)
   }
 
-  console.log(`[error-watcher] Watching ${config.discord.triggerWhitelist.length} channel(s), interval ${config.errorWatcher.intervalMs / 1000 / 60 / 60}h, target ${config.errorWatcher.targetRepo}`)
+  console.log(`[error-watcher] Starting, interval ${config.errorWatcher.intervalMs / 1000 / 60 / 60}h`)
 
   // Run once shortly after startup (30s delay to let Discord connect)
   setTimeout(() => runErrorWatcher(), 30_000)
@@ -84,11 +87,19 @@ export function stopErrorWatcher() {
   }
 }
 
+/**
+ * Extract owner/repo from a GitHub URL like https://github.com/owner/repo or https://github.com/owner/repo.git
+ */
+function extractOwnerRepo(repoUrl: string): string | null {
+  const match = repoUrl.match(/github\.com\/([^/]+\/[^/.]+)/)
+  return match ? match[1] : null
+}
+
 export async function runErrorWatcher() {
   const config = loadConfig()
   const client = getDiscordClient()
 
-  if (!client || !config.errorWatcher.targetRepo) return
+  if (!client) return
 
   lastRunStatus = 'running'
   lastRunError = null
@@ -97,48 +108,98 @@ export async function runErrorWatcher() {
 
   try {
     const state = loadState()
-    const allErrors: Array<{ channelId: string; authorId: string; messageId: string; content: string; timestamp: Date }> = []
+    let totalErrors = 0
+    let totalIssuesCreated = 0
+    let totalSkipped = 0
+    const allDetails: string[] = []
 
-    for (const rule of config.discord.triggerWhitelist) {
-      const key = `${rule.channelId}:${rule.authorId}`
-      const afterId = state.checkpoints[key] || null
+    // Find projects with error watcher enabled
+    const projects = await prisma.project.findMany({
+      where: { errorWatcherEnabled: true },
+    })
 
-      const messages = await fetchChannelMessages(rule.channelId, rule.authorId, afterId)
+    if (projects.length > 0) {
+      // Per-project error watching
+      for (const project of projects) {
+        const projectConfig = resolveProjectConfig(project, config)
+        const channelId = projectConfig.errorWatcherChannel
+        const targetRepo = extractOwnerRepo(project.repoUrl)
 
-      if (messages.length > 0) {
-        allErrors.push(...messages)
-        // Update checkpoint to latest message
-        const latest = messages[messages.length - 1]
-        state.checkpoints[key] = latest.messageId
+        if (!channelId || !targetRepo) {
+          console.log(`[error-watcher] Project "${project.name}" missing channel or repo URL, skipping`)
+          continue
+        }
+
+        const key = `channel:${channelId}`
+        const afterId = state.checkpoints[key] || null
+
+        const messages = await fetchAllChannelMessages(channelId, afterId)
+
+        if (messages.length > 0) {
+          const latest = messages[messages.length - 1]
+          state.checkpoints[key] = latest.messageId
+        }
+
+        console.log(`[error-watcher] Project "${project.name}" (${channelId}): ${messages.length} new message(s)`)
+
+        if (messages.length > 0) {
+          totalErrors += messages.length
+          const result = await analyzeAndCreateIssues(messages, targetRepo, projectConfig.errorWatcherLabels)
+          totalIssuesCreated += result.issuesCreated
+          totalSkipped += result.skipped
+          if (result.details) allDetails.push(`**${project.name}**: ${result.details}`)
+        }
+      }
+    } else if (config.errorWatcher.targetRepo) {
+      // Fallback: global error watcher using triggerWhitelist
+      const allErrors: Array<{ channelId: string; authorId: string; messageId: string; content: string; timestamp: Date }> = []
+
+      for (const rule of config.discord.triggerWhitelist) {
+        const key = `${rule.channelId}:${rule.authorId}`
+        const afterId = state.checkpoints[key] || null
+
+        const messages = await fetchChannelMessages(rule.channelId, rule.authorId, afterId)
+
+        if (messages.length > 0) {
+          allErrors.push(...messages)
+          const latest = messages[messages.length - 1]
+          state.checkpoints[key] = latest.messageId
+        }
+
+        console.log(`[error-watcher] ${key}: ${messages.length} new message(s)`)
       }
 
-      console.log(`[error-watcher] ${key}: ${messages.length} new message(s)`)
+      if (allErrors.length > 0) {
+        totalErrors = allErrors.length
+        const result = await analyzeAndCreateIssues(allErrors, config.errorWatcher.targetRepo, config.errorWatcher.labels)
+        totalIssuesCreated = result.issuesCreated
+        totalSkipped = result.skipped
+        if (result.details) allDetails.push(result.details)
+      }
+    } else {
+      lastRunStatus = 'success'
+      lastRunTime = Date.now()
+      logActivity('error-watcher', 'No projects or global target configured')
+      return
     }
 
     saveState(state)
 
-    if (allErrors.length === 0) {
+    if (totalErrors === 0) {
       lastRunStatus = 'success'
       lastRunTime = Date.now()
       logActivity('error-watcher', 'No new errors found')
       return
     }
 
-    console.log(`[error-watcher] Found ${allErrors.length} new error message(s), analyzing...`)
-    logActivity('error-watcher', `Found ${allErrors.length} new error(s), analyzing...`)
-
-    // Send to Claude for analysis + issue creation
-    const result = await analyzeAndCreateIssues(allErrors, config.errorWatcher.targetRepo, config.errorWatcher.labels)
-
-    lastRunIssuesCreated = result.issuesCreated
+    lastRunIssuesCreated = totalIssuesCreated
     lastRunStatus = 'success'
     lastRunTime = Date.now()
 
-    const summary = `Error watcher: scanned ${allErrors.length} error(s), created ${result.issuesCreated} issue(s)${result.skipped > 0 ? `, skipped ${result.skipped} duplicate(s)` : ''}`
+    const summary = `Error watcher: scanned ${totalErrors} error(s), created ${totalIssuesCreated} issue(s)${totalSkipped > 0 ? `, skipped ${totalSkipped} duplicate(s)` : ''}`
     logActivity('error-watcher', summary)
 
-    // DM owner the summary
-    await dmOwner(`**Error Watcher Report**\n${summary}\n\n${result.details}`)
+    await dmOwner(`**Error Watcher Report**\n${summary}\n\n${allDetails.join('\n\n')}`)
 
   } catch (err: any) {
     lastRunStatus = 'error'
@@ -178,6 +239,41 @@ async function fetchChannelMessages(
     return filtered.map(m => ({
       channelId,
       authorId,
+      messageId: m.id,
+      content: m.content || (m.embeds.length > 0 ? m.embeds.map(e => `${e.title || ''}\n${e.description || ''}`).join('\n---\n') : ''),
+      timestamp: m.createdAt,
+    })).filter(m => m.content.trim().length > 0)
+  } catch (err: any) {
+    console.error(`[error-watcher] Failed to fetch messages from ${channelId}:`, err.message)
+    return []
+  }
+}
+
+async function fetchAllChannelMessages(
+  channelId: string,
+  afterMessageId: string | null,
+): Promise<Array<{ channelId: string; authorId: string; messageId: string; content: string; timestamp: Date }>> {
+  const client = getDiscordClient()
+  if (!client) return []
+
+  try {
+    const channel = await client.channels.fetch(channelId)
+    if (!channel || !('messages' in channel)) return []
+
+    const textChannel = channel as TextChannel
+    const options: { limit: number; after?: string } = { limit: 100 }
+    if (afterMessageId) {
+      options.after = afterMessageId
+    }
+
+    const fetched = await textChannel.messages.fetch(options)
+
+    const sorted = [...fetched.values()]
+      .sort((a, b) => a.createdTimestamp - b.createdTimestamp)
+
+    return sorted.map(m => ({
+      channelId,
+      authorId: m.author.id,
       messageId: m.id,
       content: m.content || (m.embeds.length > 0 ? m.embeds.map(e => `${e.title || ''}\n${e.description || ''}`).join('\n---\n') : ''),
       timestamp: m.createdAt,

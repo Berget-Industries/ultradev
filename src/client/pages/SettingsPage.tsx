@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import {
-  Settings, FileText, Save, Eye, EyeOff, Plus,
+  Settings, FileText, Save, Eye, EyeOff,
   Check, AlertCircle, Server, Download, Upload, RotateCcw, Trash2,
   Zap, Database, RefreshCw, Github, MessageSquare, Cpu,
   FolderOpen, Terminal, ScrollText, Palette, Flag,
@@ -14,8 +14,6 @@ import { Badge } from '@/components/ui/badge'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { SettingsSkeleton } from '@/components/skeletons/SettingsSkeleton'
-import { ProjectList } from '@/components/projects/ProjectList'
-import { ProjectForm, type Project, type CronjobOption } from '@/components/projects/ProjectForm'
 import { api } from '@/lib/api'
 import { useStore } from '@/lib/store'
 import { cn } from '@/lib/utils'
@@ -895,24 +893,11 @@ export default function SettingsPage() {
     () => api.get('/settings/system-info'),
     { ttl: 10_000 },
   )
-  const { data: projects, refresh: refreshProjects } = useStore<Project[]>(
-    '/projects',
-    () => api.get('/projects'),
-  )
-  const { data: cronjobs } = useStore<CronjobOption[]>(
-    '/cronjobs',
-    () => api.get('/cronjobs'),
-  )
-
   // --- Lifted settings form state ---
   const [values, setValues] = useState<Record<string, string>>({})
   const [visibleSecrets, setVisibleSecrets] = useState<Set<string>>(new Set())
   const [saving, setSaving] = useState(false)
   const [configToast, setConfigToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null)
-
-  // --- Repos management (embedded in GitHub section) ---
-  const [repoDialogOpen, setRepoDialogOpen] = useState(false)
-  const [editingProject, setEditingProject] = useState<Project | null>(null)
 
   // Sync form values when settings load or refresh
   useEffect(() => {
@@ -989,74 +974,10 @@ export default function SettingsPage() {
     refreshSystemInfo()
   }
 
-  const handleProjectSubmit = async (data: Partial<Project>) => {
-    if (editingProject) {
-      await api.put(`/projects/${editingProject.id}`, data)
-    } else {
-      await api.post('/projects', data)
-    }
-    setEditingProject(null)
-    refreshProjects()
-  }
-
-  const handleProjectEdit = (p: Project) => {
-    setEditingProject(p)
-    setRepoDialogOpen(true)
-  }
-
-  const handleProjectDelete = async (id: number) => {
-    await api.del(`/projects/${id}`)
-    refreshProjects()
-  }
-
   const renderContent = () => {
     const category = SECTION_TO_CATEGORY[activeSection]
 
-    // GitHub section: config settings + repos list
-    if (activeSection === 'github' && settings[category!]) {
-      return (
-        <>
-          <CategorySection
-            category={category!}
-            entries={settings[category!]}
-            values={values}
-            setValues={setValues}
-            visibleSecrets={visibleSecrets}
-            toggleSecretVisibility={toggleSecretVisibility}
-            hasChanges={hasChanges}
-            saving={saving}
-            onSave={handleSave}
-          />
-          <div className="mt-8 border-t border-zinc-800 pt-8 space-y-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <h2 className="text-lg font-semibold">Repositories</h2>
-                <p className="text-sm text-muted-foreground">
-                  {projects?.length ?? 0} repo{(projects?.length ?? 0) !== 1 ? 's' : ''} configured
-                </p>
-              </div>
-              <Button size="sm" onClick={() => { setEditingProject(null); setRepoDialogOpen(true) }}>
-                <Plus className="h-4 w-4" /> New Repo
-              </Button>
-            </div>
-            <ProjectList
-              projects={projects ?? []}
-              onEdit={handleProjectEdit}
-              onDelete={handleProjectDelete}
-            />
-            <ProjectForm
-              open={repoDialogOpen}
-              onOpenChange={setRepoDialogOpen}
-              project={editingProject}
-              cronjobs={cronjobs ?? []}
-              onSubmit={handleProjectSubmit}
-            />
-          </div>
-        </>
-      )
-    }
-
-    // Other config category sections
+    // Config category sections
     if (category && settings[category]) {
       return (
         <CategorySection

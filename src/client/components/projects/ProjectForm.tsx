@@ -20,6 +20,9 @@ export interface Project {
   max_attempts: number | null
   notify_on_success: boolean | null
   notify_on_failure: boolean | null
+  error_watcher_enabled: boolean
+  error_watcher_channel: string | null
+  error_watcher_labels: string | null
   created_at: string
   updated_at: string
 }
@@ -52,6 +55,9 @@ export function ProjectForm({ open, onOpenChange, project, cronjobs, onSubmit }:
   const [maxAttempts, setMaxAttempts] = useState<string>('')
   const [notifyOnSuccess, setNotifyOnSuccess] = useState<boolean | null>(null)
   const [notifyOnFailure, setNotifyOnFailure] = useState<boolean | null>(null)
+  const [errorWatcherEnabled, setErrorWatcherEnabled] = useState(false)
+  const [errorWatcherChannel, setErrorWatcherChannel] = useState('')
+  const [errorWatcherLabels, setErrorWatcherLabels] = useState('')
 
   useEffect(() => {
     if (project) {
@@ -65,13 +71,17 @@ export function ProjectForm({ open, onOpenChange, project, cronjobs, onSubmit }:
       setMaxAttempts(project.max_attempts != null ? String(project.max_attempts) : '')
       setNotifyOnSuccess(project.notify_on_success)
       setNotifyOnFailure(project.notify_on_failure)
+      setErrorWatcherEnabled(project.error_watcher_enabled ?? false)
+      setErrorWatcherChannel(project.error_watcher_channel ?? '')
+      setErrorWatcherLabels(project.error_watcher_labels ?? '')
       // Auto-expand advanced if any override is set
       setShowAdvanced(
         project.worker_timeout_ms != null ||
         !!project.default_labels ||
         project.max_attempts != null ||
         project.notify_on_success != null ||
-        project.notify_on_failure != null
+        project.notify_on_failure != null ||
+        project.error_watcher_enabled
       )
     } else {
       setName('')
@@ -84,6 +94,9 @@ export function ProjectForm({ open, onOpenChange, project, cronjobs, onSubmit }:
       setMaxAttempts('')
       setNotifyOnSuccess(null)
       setNotifyOnFailure(null)
+      setErrorWatcherEnabled(false)
+      setErrorWatcherChannel('')
+      setErrorWatcherLabels('')
       setShowAdvanced(false)
     }
   }, [project, open])
@@ -101,6 +114,9 @@ export function ProjectForm({ open, onOpenChange, project, cronjobs, onSubmit }:
       max_attempts: maxAttempts ? Number(maxAttempts) : null,
       notify_on_success: notifyOnSuccess,
       notify_on_failure: notifyOnFailure,
+      error_watcher_enabled: errorWatcherEnabled,
+      error_watcher_channel: errorWatcherChannel || null,
+      error_watcher_labels: errorWatcherLabels || null,
     })
     onOpenChange(false)
   }
@@ -237,6 +253,40 @@ export function ProjectForm({ open, onOpenChange, project, cronjobs, onSubmit }:
                       onCheckedChange={(v) => setNotifyOnFailure(v)}
                     />
                   </div>
+                </div>
+                <div className="border-t border-zinc-800 pt-3 mt-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="text-sm font-medium">Error Watcher Enabled</div>
+                      <div className="text-xs text-muted-foreground">
+                        Monitor a Discord channel for errors and auto-create issues
+                      </div>
+                    </div>
+                    <Switch
+                      checked={errorWatcherEnabled}
+                      onCheckedChange={(v) => setErrorWatcherEnabled(v)}
+                    />
+                  </div>
+                  {errorWatcherEnabled && (
+                    <div className="mt-3 space-y-3">
+                      <div>
+                        <label className="text-sm font-medium">Error Channel</label>
+                        <Input
+                          value={errorWatcherChannel}
+                          onChange={e => setErrorWatcherChannel(e.target.value)}
+                          placeholder="Discord channel ID"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-sm font-medium">Error Labels</label>
+                        <Input
+                          value={errorWatcherLabels}
+                          onChange={e => setErrorWatcherLabels(e.target.value)}
+                          placeholder="production, bug, auto-triaged"
+                        />
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             )}

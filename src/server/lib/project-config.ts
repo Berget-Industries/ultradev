@@ -10,6 +10,9 @@ export interface ProjectConfig {
   maxAttempts: number
   notifyOnSuccess: boolean
   notifyOnFailure: boolean
+  errorWatcherEnabled: boolean
+  errorWatcherChannel: string | null
+  errorWatcherLabels: string[]
 }
 
 /**
@@ -24,5 +27,10 @@ export function resolveProjectConfig(project: Project, global: Config): ProjectC
     maxAttempts: project.maxAttempts ?? 3,
     notifyOnSuccess: project.notifyOnSuccess ?? global.notifications.discordOnSuccess,
     notifyOnFailure: project.notifyOnFailure ?? global.notifications.discordOnFailure,
+    errorWatcherEnabled: project.errorWatcherEnabled,
+    errorWatcherChannel: project.errorWatcherChannel,
+    errorWatcherLabels: project.errorWatcherLabels
+      ? project.errorWatcherLabels.split(',').map(s => s.trim()).filter(Boolean)
+      : global.errorWatcher.labels,
   }
 }
