@@ -20,7 +20,10 @@ router.get('/', async (req, res) => {
     if (pid === null) return res.status(400).json({ error: 'Invalid project_id' })
     where.projectId = pid
   }
-  if (column_id && validColumns.has(column_id as string)) where.columnId = column_id as TaskColumn
+  if (column_id) {
+    if (!validColumns.has(column_id as string)) return res.status(400).json({ error: 'Invalid column_id' })
+    where.columnId = column_id as TaskColumn
+  }
 
   const rows = await prisma.task.findMany({
     where,
@@ -44,6 +47,11 @@ router.post('/', async (req, res) => {
   })
   const position = (agg._max.position ?? 0) + 1
 
+  const parsedProjectId = project_id == null ? null : parseIntStrict(String(project_id))
+  if (project_id != null && parsedProjectId === null) {
+    return res.status(400).json({ error: 'Invalid project_id' })
+  }
+
   const row = await prisma.task.create({
     data: {
       title,
@@ -51,7 +59,7 @@ router.post('/', async (req, res) => {
       columnId: col as TaskColumn,
       position,
       githubUrl: github_url || '',
-      projectId: project_id != null ? parseIntStrict(String(project_id)) : null,
+      projectId: parsedProjectId,
     },
   })
   res.status(201).json(toSnakeCase(row))
@@ -61,6 +69,13 @@ router.put('/:id', async (req, res) => {
   const { title, description, github_url, project_id } = req.body
   const id = parseIntStrict(req.params.id)
   if (id === null) return res.status(400).json({ error: 'Invalid id' })
+  const parsedProjectId =
+    project_id === undefined ? undefined :
+    project_id === null ? null :
+    parseIntStrict(String(project_id))
+  if (project_id !== undefined && project_id !== null && parsedProjectId === null) {
+    return res.status(400).json({ error: 'Invalid project_id' })
+  }
   try {
     const row = await prisma.task.update({
       where: { id },
@@ -68,7 +83,7 @@ router.put('/:id', async (req, res) => {
         ...(title !== undefined && { title }),
         ...(description !== undefined && { description }),
         ...(github_url !== undefined && { githubUrl: github_url }),
-        ...(project_id !== undefined && { projectId: project_id === null ? null : (parseIntStrict(String(project_id)) ?? undefined) }),
+        ...(parsedProjectId !== undefined && { projectId: parsedProjectId }),
       },
     })
     res.json(toSnakeCase(row))

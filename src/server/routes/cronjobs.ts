@@ -19,7 +19,8 @@ class DateValidationError extends Error {
 function parseDateField(raw: unknown, field: string): Date | null | undefined {
   if (raw === undefined) return undefined
   if (raw === null) return null
-  const d = new Date(raw as string)
+  if (typeof raw !== 'string') throw new DateValidationError(field)
+  const d = new Date(raw)
   if (isNaN(d.getTime())) throw new DateValidationError(field)
   return d
 }
@@ -32,7 +33,7 @@ router.get('/', async (_req, res) => {
 router.post('/', async (req, res) => {
   const { name, schedule, description, command, status } = req.body
   if (!name) return res.status(400).json({ error: 'name is required' })
-  const resolvedStatus = (status || 'active') as string
+  const resolvedStatus = (status ?? 'active') as string
   if (!VALID_STATUSES.includes(resolvedStatus as CronjobStatus)) {
     return res.status(400).json({ error: `Invalid status. Must be one of: ${VALID_STATUSES.join(', ')}` })
   }
