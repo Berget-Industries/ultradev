@@ -45,6 +45,9 @@ export async function loadSettingsConfig(): Promise<Config> {
       intervalMs: safeParseInt(get('error_watcher.interval_ms', process.env.ULTRADEV_ERROR_WATCHER_INTERVAL_MS, String(12 * 60 * 60 * 1000)), 12 * 60 * 60 * 1000),
       targetRepo: get('error_watcher.target_repo', process.env.ULTRADEV_ERROR_WATCHER_REPO, '') || null,
       labels: splitCsv(get('error_watcher.labels', process.env.ULTRADEV_ERROR_WATCHER_LABELS, 'production,bug,auto-triaged')),
+      watchedChannels: parseTriggerWhitelist(
+        get('error_watcher.watched_channels', process.env.ULTRADEV_ERROR_WATCHER_WATCHED_CHANNELS, '')
+      ),
     },
     worker: {
       maxConcurrent: safeParseInt(get('worker.max_concurrent', process.env.ULTRADEV_WORKER_MAX_CONCURRENT, '1'), 1),

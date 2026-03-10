@@ -49,7 +49,7 @@ export function getErrorWatcherState() {
     lastRunStatus,
     lastRunError,
     lastRunIssuesCreated,
-    watchedChannels: config.discord.triggerWhitelist.map(r => ({
+    watchedChannels: config.errorWatcher.watchedChannels.map(r => ({
       channelId: r.channelId,
       authorId: r.authorId,
     })),
@@ -65,11 +65,11 @@ export function startErrorWatcher() {
 
   // Allow startup if either global targetRepo is set OR per-project watchers may exist
   // The actual project check happens at runtime in runErrorWatcher()
-  if (!config.errorWatcher.targetRepo && config.discord.triggerWhitelist.length === 0) {
+  if (!config.errorWatcher.targetRepo && config.errorWatcher.watchedChannels.length === 0) {
     // Still start — per-project watchers may be configured in the DB
     console.log('[error-watcher] No global target/channels, will check per-project configs')
   } else if (config.errorWatcher.targetRepo) {
-    console.log(`[error-watcher] Global target: ${config.errorWatcher.targetRepo}, ${config.discord.triggerWhitelist.length} channel(s)`)
+    console.log(`[error-watcher] Global target: ${config.errorWatcher.targetRepo}, ${config.errorWatcher.watchedChannels.length} channel(s)`)
   }
 
   console.log(`[error-watcher] Starting, interval ${config.errorWatcher.intervalMs / 1000 / 60 / 60}h`)
@@ -151,10 +151,10 @@ export async function runErrorWatcher() {
         }
       }
     } else if (config.errorWatcher.targetRepo) {
-      // Fallback: global error watcher using triggerWhitelist
+      // Fallback: global error watcher using watched channels
       const allErrors: Array<{ channelId: string; authorId: string; messageId: string; content: string; timestamp: Date }> = []
 
-      for (const rule of config.discord.triggerWhitelist) {
+      for (const rule of config.errorWatcher.watchedChannels) {
         const key = `${rule.channelId}:${rule.authorId}`
         const afterId = state.checkpoints[key] || null
 

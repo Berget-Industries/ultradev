@@ -10,7 +10,7 @@ export const defaultSettings = [
   { key: 'discord.enabled', value: 'true', type: 'boolean', label: 'Enabled', description: 'Enable Discord bot integration', category: 'discord' },
   { key: 'discord.token', value: '', type: 'secret', label: 'Bot Token', description: 'Discord bot token', category: 'discord' },
   { key: 'discord.owner_user_id', value: '', type: 'string', label: 'Owner User ID', description: 'Discord user ID of the bot owner', category: 'discord' },
-{ key: 'discord.trigger_whitelist', value: '', type: 'string', label: 'Trigger Whitelist', description: 'channelId:authorId pairs (comma-separated)', category: 'discord' },
+  { key: 'discord.trigger_whitelist', value: '', type: 'string', label: 'Messaging Whitelist', description: 'Channel+user pairs the bot responds to interactively (channelId:authorId, comma-separated)', category: 'discord' },
   { key: 'discord.notifications_enabled', value: 'true', type: 'boolean', label: 'Notifications Enabled', description: 'Master toggle for all notifications', category: 'discord' },
   { key: 'discord.notify_on_success', value: 'true', type: 'boolean', label: 'Notify on Success', description: 'Send Discord notification when a task completes successfully', category: 'discord' },
   { key: 'discord.notify_on_failure', value: 'true', type: 'boolean', label: 'Notify on Failure', description: 'Send Discord notification when a task fails', category: 'discord' },
@@ -21,6 +21,7 @@ export const defaultSettings = [
   { key: 'error_watcher.interval_ms', value: '43200000', type: 'number', label: 'Error Watcher Interval', description: 'How often to scan for errors', category: 'worker' },
   { key: 'error_watcher.target_repo', value: '', type: 'string', label: 'Error Watcher Target Repo', description: 'Repo to create issues in (owner/repo)', category: 'worker' },
   { key: 'error_watcher.labels', value: 'production,bug,auto-triaged', type: 'string', label: 'Error Watcher Labels', description: 'Labels for auto-created issues', category: 'worker' },
+  { key: 'error_watcher.watched_channels', value: '', type: 'string', label: 'Watched Channels', description: 'Discord channels to scan for errors (channelId:authorId pairs, comma-separated)', category: 'worker' },
   { key: 'worker.max_concurrent', value: '1', type: 'number', label: 'Max Concurrent Workers', description: 'Maximum number of parallel Claude workers', category: 'worker' },
   { key: 'worker.default_timeout_ms', value: '1800000', type: 'number', label: 'Default Timeout', description: 'Default task timeout (30 min default)', category: 'worker' },
 
