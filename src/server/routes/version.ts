@@ -104,9 +104,9 @@ async function runUpdate(latestTag: string) {
     setStepStatus('install', 'done', 'Dependencies installed')
 
     // Step 4 — database migrations + seed
-    setStepStatus('migrate', 'in_progress', 'Pushing schema changes…')
-    await execFileAsync('pnpm', ['exec', 'prisma', 'db', 'push', '--skip-generate'], {
-      timeout: 60_000,
+    setStepStatus('migrate', 'in_progress', 'Running database migrations…')
+    await execFileAsync('pnpm', ['exec', 'prisma', 'migrate', 'deploy'], {
+      timeout: 120_000,
       encoding: 'utf-8',
       env: { ...process.env },
     })
