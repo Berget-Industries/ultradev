@@ -11,6 +11,7 @@
     "postinstall": "prisma generate",
     "predev": "prisma generate",
     "db:push": "prisma db push",
+    "db:migrate": "prisma migrate deploy",
     "update": "git fetch --tags && git checkout $(git describe --tags --abbrev=0 $(git rev-list --tags --max-count=1)) && pnpm install",
     "changeset": "changeset",
     "version-packages": "changeset version",
