@@ -1,5 +1,13 @@
 # ultradev-dashboard
 
+## 1.6.1
+
+### Patch Changes
+
+- [#39](https://github.com/Berget-Industries/ultradev/pull/39) [`d2da9eb`](https://github.com/Berget-Industries/ultradev/commit/d2da9eb30ca90803ca3c599f373cc18d368c261e) Thanks [@willebergh](https://github.com/willebergh)! - Add CodeRabbit configuration to enable automatic review approvals on PRs.
+
+- [#41](https://github.com/Berget-Industries/ultradev/pull/41) [`99f524a`](https://github.com/Berget-Industries/ultradev/commit/99f524a10acdcd11cab118c3d5688b00e32f85ce) Thanks [@Programmeraren1337](https://github.com/Programmeraren1337)! - Replace `prisma db push --skip-generate` with `prisma migrate deploy` in update flow. Adds baseline migration and configures migrations directory in prisma.config.ts. Prevents data loss during upgrades.
+
 ## 1.6.0
 
 ### Minor Changes
