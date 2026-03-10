@@ -1,0 +1,7 @@
+reviews:
+  auto_review:
+    enabled: true
+  request_changes_workflow: false
+  review_status: true
+  approve:
+    enabled: true
