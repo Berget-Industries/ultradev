@@ -1,5 +1,15 @@
 # ultradev-dashboard
 
+## 1.5.0
+
+### Minor Changes
+
+- [#33](https://github.com/Berget-Industries/ultradev/pull/33) [`a0ff46d`](https://github.com/Berget-Industries/ultradev/commit/a0ff46d73ccc3fff6e0e511495a00db38e3547ab) Thanks [@bergetUltraDev](https://github.com/bergetUltraDev)! - Settings page redesign: sidebar navigation splitting each section into its own page, wider max-width container, human-friendly inputs (textareas for comma-separated fields, full-width inputs, vertical stacking). Fix `gh auth status --active` unknown flag error.
+
+### Patch Changes
+
+- [#36](https://github.com/Berget-Industries/ultradev/pull/36) [`7d3379a`](https://github.com/Berget-Industries/ultradev/commit/7d3379a7d1de9dc71f1ce868fc61dcbb50f61027) Thanks [@Programmeraren1337](https://github.com/Programmeraren1337)! - Fix self-update and maintenance mode on macOS by gating systemctl calls behind a Linux platform check and spawning a detached restart process on non-Linux systems
+
 ## 1.4.1
 
 ### Patch Changes
