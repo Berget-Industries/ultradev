@@ -1,9 +1,11 @@
 import { Router } from 'express'
 import { existsSync, writeFileSync, unlinkSync } from 'fs'
 import { execSync } from 'child_process'
+import { platform } from 'os'
 import { MAINTENANCE_FILE } from '../paths.js'
 
 const router = Router()
+const IS_LINUX = platform() === 'linux'
 
 router.get('/', (_req, res) => {
   const enabled = existsSync(MAINTENANCE_FILE)
@@ -22,9 +24,11 @@ router.post('/', (req, res) => {
       // Create maintenance file
       writeFileSync(MAINTENANCE_FILE, new Date().toISOString(), 'utf-8')
       // Stop the standalone ultradev service (if running separately)
-      try {
-        execSync('systemctl --user stop ultradev 2>/dev/null || true', { timeout: 10000 })
-      } catch { /* ignore — may not be running */ }
+      if (IS_LINUX) {
+        try {
+          execSync('systemctl --user stop ultradev 2>/dev/null || true', { timeout: 10000 })
+        } catch { /* ignore — may not be running */ }
+      }
       console.log('[maintenance] Maintenance mode ENABLED — all polling stopped')
     } else {
       // Remove maintenance file
@@ -32,9 +36,11 @@ router.post('/', (req, res) => {
         unlinkSync(MAINTENANCE_FILE)
       }
       // Start the standalone ultradev service
-      try {
-        execSync('systemctl --user start ultradev 2>/dev/null || true', { timeout: 10000 })
-      } catch { /* ignore */ }
+      if (IS_LINUX) {
+        try {
+          execSync('systemctl --user start ultradev 2>/dev/null || true', { timeout: 10000 })
+        } catch { /* ignore */ }
+      }
       console.log('[maintenance] Maintenance mode DISABLED — polling resumed')
     }
 

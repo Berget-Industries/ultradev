@@ -1,11 +1,13 @@
 import { Router } from 'express'
-import { execFile } from 'child_process'
+import { execFile, spawn } from 'child_process'
 import { promisify } from 'util'
 import { createRequire } from 'module'
+import { platform } from 'os'
 
 const require = createRequire(import.meta.url)
 const execFileAsync = promisify(execFile)
 const router = Router()
+const IS_LINUX = platform() === 'linux'
 
 let cachedLatest: { tag: string; fetchedAt: number } | null = null
 const CACHE_TTL = 10 * 60 * 1000 // 10 minutes
@@ -118,12 +120,41 @@ async function runUpdate(latestTag: string) {
 
     // Step 5 — restart
     setStepStatus('restart', 'in_progress', 'Restarting server…')
-    setStepStatus('restart', 'done', 'Restart initiated')
-    // Reset active flag so a stale state doesn't block future updates
-    // (defensive: if process.exit somehow doesn't fire)
-    updateState.active = false
-    // Give SSE clients a moment to receive the final state before exiting
-    setTimeout(() => process.exit(0), 1_500)
+
+    if (IS_LINUX) {
+      // On Linux, systemd will auto-restart the process after exit
+      setStepStatus('restart', 'done', 'Restart initiated')
+      updateState.active = false
+      setTimeout(() => process.exit(0), 1_500)
+    } else if (platform() === 'darwin') {
+      // On macOS there is no service manager to respawn the process,
+      // so we spawn a detached child that restarts the server after
+      // the current process exits.
+      const restartCmd = process.env.ULTRADEV_RESTART_CMD
+        || `sleep 2 && cd "${process.cwd()}" && exec npx tsx src/server/index.ts`
+      const child = spawn('/bin/bash', ['-c', restartCmd], {
+        detached: true,
+        stdio: 'ignore',
+        env: { ...process.env },
+      })
+
+      child.on('error', (err) => {
+        console.error('[version] Failed to spawn restart process:', err)
+        setStepStatus('restart', 'error', `Restart failed: ${err.message}`)
+        updateState.error = `Restart failed: ${err.message}`
+        updateState.active = false
+      })
+
+      child.unref()
+      setStepStatus('restart', 'done', 'Restart initiated')
+      updateState.active = false
+      setTimeout(() => process.exit(0), 1_500)
+    } else {
+      // Unsupported platform — complete the update but skip auto-restart
+      setStepStatus('restart', 'error', 'Auto-restart is not supported on this platform. Please restart the server manually.')
+      updateState.error = 'Manual restart required'
+      updateState.active = false
+    }
   } catch (err: any) {
     const failedStep = updateState.steps.find((s) => s.status === 'in_progress')
     if (failedStep) {
