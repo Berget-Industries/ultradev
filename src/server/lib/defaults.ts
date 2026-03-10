@@ -14,6 +14,7 @@ export const defaultSettings = [
   { key: 'discord.notifications_enabled', value: 'true', type: 'boolean', label: 'Notifications Enabled', description: 'Master toggle for all notifications', category: 'discord' },
   { key: 'discord.notify_on_success', value: 'true', type: 'boolean', label: 'Notify on Success', description: 'Send Discord notification when a task completes successfully', category: 'discord' },
   { key: 'discord.notify_on_failure', value: 'true', type: 'boolean', label: 'Notify on Failure', description: 'Send Discord notification when a task fails', category: 'discord' },
+  { key: 'discord.notification_channel_id', value: '', type: 'string', label: 'Notification Channel ID', description: 'Discord channel ID to send notifications to. Leave empty to DM the owner instead.', category: 'discord' },
 
   // --- Worker ---
   { key: 'error_watcher.enabled', value: 'true', type: 'boolean', label: 'Error Watcher Enabled', description: 'Enable error watcher', category: 'worker' },

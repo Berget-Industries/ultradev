@@ -1,4 +1,4 @@
-import { Client, GatewayIntentBits, Partials, ChannelType, type Message, type DMChannel, type Collection } from 'discord.js'
+import { Client, GatewayIntentBits, Partials, ChannelType, type Message, type DMChannel, type Collection, type TextChannel } from 'discord.js'
 import { execFileSync, spawn } from 'child_process'
 import { readdirSync, existsSync } from 'fs'
 import { join } from 'path'
@@ -37,6 +37,28 @@ export async function dmOwner(text: string) {
     }
   } catch (err: any) {
     console.error('[discord] Failed to DM owner:', err.message)
+  }
+}
+
+export async function sendToChannel(channelId: string, text: string) {
+  if (!client) return
+  try {
+    const channel = await client.channels.fetch(channelId)
+    if (!channel || !channel.isTextBased()) {
+      console.error(`[discord] Channel ${channelId} not found or not text-based`)
+      return
+    }
+    const sendable = channel as TextChannel
+    if (text.length <= 2000) {
+      await sendable.send(text)
+    } else {
+      const chunks = text.match(/[\s\S]{1,1990}/g) || []
+      for (const chunk of chunks) {
+        await sendable.send(chunk)
+      }
+    }
+  } catch (err: any) {
+    console.error(`[discord] Failed to send to channel ${channelId}:`, err.message)
   }
 }
 

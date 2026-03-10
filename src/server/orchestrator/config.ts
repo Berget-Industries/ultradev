@@ -22,6 +22,7 @@ export interface Config {
     enabled: boolean
     token: string | null
     ownerUserId: string | null
+    notificationChannelId: string | null
     triggerWhitelist: TriggerRule[]
   }
   errorWatcher: ErrorWatcherConfig
@@ -77,6 +78,7 @@ function envFallbackConfig(): Config {
       enabled: process.env.ULTRADEV_DISCORD_ENABLED !== 'false',
       token: process.env.ULTRADEV_DISCORD_TOKEN || null,
       ownerUserId: process.env.ULTRADEV_DISCORD_OWNER_USER_ID || null,
+      notificationChannelId: process.env.ULTRADEV_DISCORD_NOTIFICATION_CHANNEL_ID || null,
       triggerWhitelist: parseTriggerWhitelist(process.env.ULTRADEV_DISCORD_TRIGGER_WHITELIST || ''),
     },
     errorWatcher: {
