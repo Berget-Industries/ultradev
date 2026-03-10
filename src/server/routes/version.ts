@@ -1,11 +1,13 @@
 import { Router } from 'express'
-import { execFile } from 'child_process'
+import { execFile, spawn } from 'child_process'
 import { promisify } from 'util'
 import { createRequire } from 'module'
+import { platform } from 'os'
 
 const require = createRequire(import.meta.url)
 const execFileAsync = promisify(execFile)
 const router = Router()
+const IS_LINUX = platform() === 'linux'
 
 let cachedLatest: { tag: string; fetchedAt: number } | null = null
 const CACHE_TTL = 10 * 60 * 1000 // 10 minutes
@@ -118,12 +120,28 @@ async function runUpdate(latestTag: string) {
 
     // Step 5 — restart
     setStepStatus('restart', 'in_progress', 'Restarting server…')
-    setStepStatus('restart', 'done', 'Restart initiated')
-    // Reset active flag so a stale state doesn't block future updates
-    // (defensive: if process.exit somehow doesn't fire)
-    updateState.active = false
-    // Give SSE clients a moment to receive the final state before exiting
-    setTimeout(() => process.exit(0), 1_500)
+
+    if (IS_LINUX) {
+      // On Linux, systemd will auto-restart the process after exit
+      setStepStatus('restart', 'done', 'Restart initiated')
+      updateState.active = false
+      setTimeout(() => process.exit(0), 1_500)
+    } else {
+      // On macOS (or other platforms) there is no service manager to
+      // respawn the process, so we spawn a detached child that restarts
+      // the server after the current process exits.
+      const restartScript = `sleep 2 && cd "${process.cwd()}" && exec pnpm dev`
+      const child = spawn('bash', ['-c', restartScript], {
+        detached: true,
+        stdio: 'ignore',
+        env: { ...process.env },
+      })
+      child.unref()
+
+      setStepStatus('restart', 'done', 'Restart initiated')
+      updateState.active = false
+      setTimeout(() => process.exit(0), 1_500)
+    }
   } catch (err: any) {
     const failedStep = updateState.steps.find((s) => s.status === 'in_progress')
     if (failedStep) {
