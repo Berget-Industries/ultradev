@@ -1,5 +1,11 @@
 # ultradev-dashboard
 
+## 1.6.0
+
+### Minor Changes
+
+- [#37](https://github.com/Berget-Industries/ultradev/pull/37) [`23481c9`](https://github.com/Berget-Industries/ultradev/commit/23481c99fb6f4f55e89c6ad7c608279909719e5d) Thanks [@willebergh](https://github.com/willebergh)! - Add support for sending Discord notifications to a channel or owner DM. Adds a `discord.notification_channel_id` setting — when set, notifications go to that channel instead of DM-ing the owner. Leave empty to keep the existing owner DM behavior.
+
 ## 1.5.0
 
 ### Minor Changes
