@@ -117,10 +117,29 @@ async function handleDM(msg: Message) {
     return // silent ignore for non-owner DMs
   }
 
+  await handleInteractiveMessage(msg)
+}
+
+// --- Channel messages: respond to whitelisted channel+author pairs ---
+
+async function handleChannelMessage(msg: Message) {
+  const config = loadConfig()
+
+  const isWhitelisted = config.discord.triggerWhitelist.some(
+    rule => rule.channelId === msg.channelId && rule.authorId === msg.author.id
+  )
+  if (!isWhitelisted) return
+
+  await handleInteractiveMessage(msg)
+}
+
+// --- Shared interactive message handler (commands + conversational chat) ---
+
+async function handleInteractiveMessage(msg: Message) {
+  const config = loadConfig()
   const content = msg.content.trim()
   if (!content) return
 
-  // Handle commands in DM too
   if (content === '!status') {
     const issues = getAllIssues()
     const inProgress = Object.entries(issues).filter(([, v]) => v.status === 'in_progress')
@@ -171,32 +190,24 @@ async function handleDM(msg: Message) {
 \`!work owner/repo#123\` — work on an issue
 \`!repos\` — list cloned repos
 \`!help\` — this message
-Or just talk — I'll respond with context from our DM history`)
+Or just talk — I'll respond with context from conversation history`)
     return
   }
 
   if (content.startsWith('!')) return
 
-  // Conversational: fetch DM history as context
+  // Conversational: fetch history as context
   if ('sendTyping' in msg.channel) await msg.channel.sendTyping()
 
   try {
-    const history = await fetchDMHistory(msg.channel as DMChannel, msg.id)
+    const history = await fetchMessageHistory(msg.channel as DMChannel | TextChannel, msg.id)
     const reply = await chatWithClaude(content, msg.author.username, history)
     await sendLongReply(msg, reply)
   } catch (err: any) {
-    console.error('[discord] DM chat error:', err.message)
+    console.error('[discord] Chat error:', err.message)
     await msg.reply(`Error: \`${err.message}\``)
-    tryHeal('discord-dm-chat', err.message, { file: 'discord-bot.ts', extra: `User message: "${content}"` })
+    tryHeal('discord-chat', err.message, { file: 'discord-bot.ts', extra: `User message: "${content}"` })
   }
-}
-
-// --- Channel messages: no auto-response, channels are read by error-watcher ---
-
-async function handleChannelMessage(_msg: Message) {
-  // Channel messages are not responded to automatically.
-  // The error-watcher cron reads whitelisted channels on a schedule instead.
-  return
 }
 
 // --- Shared helpers ---
@@ -221,7 +232,7 @@ async function handleWork(msg: Message, repo: string, num: number, config: Retur
   }
 }
 
-async function fetchDMHistory(channel: DMChannel, beforeMessageId: string): Promise<Array<{ role: 'user' | 'assistant'; content: string }>> {
+async function fetchMessageHistory(channel: DMChannel | TextChannel, beforeMessageId: string): Promise<Array<{ role: 'user' | 'assistant'; content: string }>> {
   const messages: Array<{ role: 'user' | 'assistant'; content: string }> = []
 
   try {

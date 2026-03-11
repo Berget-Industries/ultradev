@@ -9,6 +9,7 @@ export interface ErrorWatcherConfig {
   intervalMs: number
   targetRepo: string | null
   labels: string[]
+  watchedChannels: TriggerRule[]
 }
 
 export interface Config {
@@ -86,6 +87,7 @@ function envFallbackConfig(): Config {
       intervalMs: parseInt(process.env.ULTRADEV_ERROR_WATCHER_INTERVAL_MS || String(12 * 60 * 60 * 1000), 10),
       targetRepo: process.env.ULTRADEV_ERROR_WATCHER_REPO || null,
       labels: splitCsv(process.env.ULTRADEV_ERROR_WATCHER_LABELS || 'production,bug,auto-triaged'),
+      watchedChannels: parseTriggerWhitelist(process.env.ULTRADEV_ERROR_WATCHER_WATCHED_CHANNELS || ''),
     },
     worker: {
       maxConcurrent: parseInt(process.env.ULTRADEV_WORKER_MAX_CONCURRENT || '1', 10),

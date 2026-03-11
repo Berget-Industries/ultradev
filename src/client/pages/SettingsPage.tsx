@@ -1243,7 +1243,7 @@ export default function SettingsPage() {
         // Keys whose values are in milliseconds — display in seconds
         const ewMsKeys = new Set(['error_watcher.interval_ms'])
         // Keys whose values are comma-separated lists
-        const ewCommaKeys = new Set(['error_watcher.labels'])
+        const ewCommaKeys = new Set(['error_watcher.labels', 'error_watcher.watched_channels'])
 
         const renderEwInput = (entry: SettingEntry) => {
           const val = values[entry.key] ?? ''
