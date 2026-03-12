@@ -1,6 +1,9 @@
-import { execFileSync } from 'child_process'
+import { execFile } from 'child_process'
+import { promisify } from 'util'
 import type { Config } from './config.js'
 import { getIssueState } from './state.js'
+
+const execFileAsync = promisify(execFile)
 import { scoreIssue, formatScore } from './prioritize.js'
 import { logActivity } from './activity-log.js'
 import type { GithubIssue, GithubPr } from '@prisma/client'
@@ -16,7 +19,6 @@ export interface PlateItem {
 
 export interface Plate {
   items: PlateItem[]
-  recentlyCompleted: string[] // keys of recently finished work
   currentTime: string
 }
 
@@ -65,9 +67,6 @@ export function buildPlate(
   for (const issue of issues) {
     const key = `${issue.repo}#${issue.number}`
     const state = getIssueState(key)
-    if (state?.status === 'done') continue
-    if (state?.status === 'in_progress') continue
-
     const labels = Array.isArray(issue.labels) ? (issue.labels as string[]) : []
     const score = scoreIssue({ labels, createdAt: issue.createdAt?.toISOString() }, state)
     const attempts = state?.attempts || 0
@@ -92,13 +91,8 @@ export function buildPlate(
     })
   }
 
-  // Get recently completed from state
-  const recentlyCompleted: string[] = []
-  // (We could scan state.json for recent 'done' items, but keep it simple for now)
-
   return {
     items,
-    recentlyCompleted,
     currentTime: new Date().toISOString(),
   }
 }
@@ -129,7 +123,7 @@ export async function intelligentDispatch(plate: Plate, config: Config): Promise
   const prompt = buildDispatchPrompt(plate)
 
   try {
-    const result = execFileSync(config.claude.command, [
+    const { stdout } = await execFileAsync(config.claude.command, [
       '--print',
       '--max-turns', '1',
       '--output-format', 'json',
@@ -140,7 +134,7 @@ export async function intelligentDispatch(plate: Plate, config: Config): Promise
       env: { ...process.env },
     })
 
-    const parsed = JSON.parse(result.trim())
+    const parsed = JSON.parse(stdout.trim())
     // Claude with --output-format json wraps the response — extract the text content
     const text = typeof parsed === 'string' ? parsed :
       parsed.result || parsed.content || parsed.text ||
@@ -184,17 +178,30 @@ Pick ONE item to work on next. Respond with ONLY a JSON object (no markdown, no 
 {"action": "handle_issue" | "handle_pr_review" | "handle_conflict" | "auto_merge" | "skip", "repo": "owner/repo", "number": 123, "reasoning": "brief explanation"}`
 }
 
+const VALID_ACTIONS: DispatchDecision['action'][] = ['handle_issue', 'handle_pr_review', 'handle_conflict', 'auto_merge', 'skip']
+
 function parseDecision(text: string, plate: Plate): DispatchDecision {
-  // Try to extract JSON from the response
-  const jsonMatch = text.match(/\{[\s\S]*?"action"[\s\S]*?\}/)
+  // Try to extract JSON from the response (match first complete JSON object without nested braces)
+  const jsonMatch = text.match(/\{[^{}]*"action"[^{}]*\}/)
   if (jsonMatch) {
     try {
       const decision = JSON.parse(jsonMatch[0]) as DispatchDecision
-      // Validate the decision references a real plate item
-      const valid = plate.items.some(
-        item => item.repo === decision.repo && item.number === decision.number
-      )
-      if (valid && decision.action && decision.reasoning) {
+      // Validate action is a known enum value
+      if (!VALID_ACTIONS.includes(decision.action)) {
+        console.warn(`[intelligent-dispatch] Invalid action: ${decision.action}`)
+        return fallbackDispatch(plate)
+      }
+      // Validate the decision references a real plate item (skip doesn't need validation)
+      if (decision.action !== 'skip') {
+        const valid = plate.items.some(
+          item => item.repo === decision.repo && item.number === decision.number
+        )
+        if (!valid) {
+          console.warn(`[intelligent-dispatch] Decision references unknown item: ${decision.repo}#${decision.number}`)
+          return fallbackDispatch(plate)
+        }
+      }
+      if (decision.reasoning) {
         return decision
       }
     } catch { /* fall through to fallback */ }

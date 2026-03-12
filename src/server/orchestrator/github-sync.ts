@@ -478,6 +478,7 @@ async function dispatch() {
       actionableIssues.push(issue)
     }
 
+    const MAX_MERGE_ATTEMPTS = 2
     const actionableMerge = config.features.autoMerge ? await getMergeReadyPrs(username) : []
     const filteredMerge = []
     for (const pr of actionableMerge) {
@@ -485,9 +486,11 @@ async function dispatch() {
       const key = `merge:${pr.repo}#${pr.number}`
       const state = getIssueState(key)
       if (state?.status === 'done' || state?.status === 'in_progress') continue
-      if ((state?.attempts || 0) >= 2) {
+      const { pc: mergePc } = await getProjectConfig(pr.repo, config)
+      const maxMergeAttempts = mergePc?.maxAttempts ?? MAX_MERGE_ATTEMPTS
+      if ((state?.attempts || 0) >= maxMergeAttempts) {
         if (!state?.notifiedMaxRetries) {
-          notify(`⚠️ **${key}** — Auto-merge failed after 2 attempts. Needs human help.`)
+          notify(`⚠️ **${key}** — Auto-merge failed after ${maxMergeAttempts} attempts. Needs human help.`)
           setIssueState(key, { notifiedMaxRetries: true })
         }
         continue
@@ -601,25 +604,29 @@ async function dispatch() {
       const state = getIssueState(key)
       const attempt = (state?.attempts || 0) + 1
 
-      console.log(`[dispatch] Auto-merging: ${pr.repo}#${pr.number} — ${pr.title} (attempt ${attempt}/2)`)
+      console.log(`[dispatch] Auto-merging: ${pr.repo}#${pr.number} — ${pr.title} (attempt ${attempt})`)
       logActivity('dispatch', `Auto-merging: ${pr.repo}#${pr.number} (intelligent: ${decision.reasoning})`)
       notify(`🚀 Auto-merging **${pr.repo}#${pr.number}** — ${pr.title}`)
 
-      const result = gh(
-        'pr', 'merge', String(pr.number),
-        '--repo', pr.repo,
-        '--squash',
-        '--delete-branch'
-      )
-
-      if (result !== '') {
-        console.log(`[dispatch] Merge output: ${result}`)
+      try {
+        const mergeOutput = execFileSync('gh', [
+          'pr', 'merge', String(pr.number),
+          '--repo', pr.repo,
+          '--squash',
+          '--delete-branch',
+        ], {
+          encoding: 'utf-8',
+          timeout: 30_000,
+          env: { ...process.env, GH_PAGER: '' },
+        })
+        if (mergeOutput.trim()) console.log(`[dispatch] Merge output: ${mergeOutput.trim()}`)
         setIssueState(key, { status: 'done', attempts: attempt, repo: pr.repo, number: pr.number, type: 'merge' })
         notify(`✅ Merged **${pr.repo}#${pr.number}** — ${pr.title}`)
         logActivity('dispatch', `Merged: ${pr.repo}#${pr.number}`)
-      } else {
-        console.error(`[dispatch] Auto-merge failed for ${pr.repo}#${pr.number}`)
-        setIssueState(key, { status: 'failed', attempts: attempt, repo: pr.repo, number: pr.number, type: 'merge', error: 'gh pr merge returned empty' })
+      } catch (mergeErr: any) {
+        const errMsg = mergeErr?.stderr || mergeErr?.message || 'gh pr merge failed'
+        console.error(`[dispatch] Auto-merge failed for ${pr.repo}#${pr.number}: ${errMsg}`)
+        setIssueState(key, { status: 'failed', attempts: attempt, repo: pr.repo, number: pr.number, type: 'merge', error: errMsg })
         notify(`❌ Auto-merge failed for **${pr.repo}#${pr.number}**`)
       }
 
