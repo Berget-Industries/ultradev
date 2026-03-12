@@ -545,6 +545,68 @@ async function dispatch() {
       return
     }
 
+    // --- Priority 4: Auto-merge (ready_to_merge PRs) ---
+    const MAX_MERGE_ATTEMPTS = 2
+    if (config.features.autoMerge) {
+      const mergeReadyPrs = await getMergeReadyPrs(username)
+      for (const pr of mergeReadyPrs) {
+        if (!(await isRepoAllowed(pr.repo))) continue
+
+        const key = `merge:${pr.repo}#${pr.number}`
+        const state = getIssueState(key)
+        if (state?.status === 'done') continue
+        if (state?.status === 'in_progress') continue
+        if ((state?.attempts || 0) >= MAX_MERGE_ATTEMPTS) {
+          if (!state?.notifiedMaxRetries) {
+            notify(`⚠️ **${key}** — Auto-merge failed after ${MAX_MERGE_ATTEMPTS} attempts. Needs human help.`)
+            setIssueState(key, { notifiedMaxRetries: true })
+          }
+          continue
+        }
+
+        const attempt = (state?.attempts || 0) + 1
+        console.log(`[dispatch] Auto-merging: ${pr.repo}#${pr.number} — ${pr.title} (attempt ${attempt}/${MAX_MERGE_ATTEMPTS})`)
+        logActivity('dispatch', `Auto-merging: ${pr.repo}#${pr.number}`)
+        notify(`🚀 Auto-merging **${pr.repo}#${pr.number}** — ${pr.title}`)
+
+        // gh() returns '' on failure (catches errors internally, never throws)
+        const result = gh(
+          'pr', 'merge', String(pr.number),
+          '--repo', pr.repo,
+          '--squash',
+          '--delete-branch'
+        )
+
+        if (result !== '') {
+          console.log(`[dispatch] Merge output: ${result}`)
+          setIssueState(key, {
+            status: 'done',
+            attempts: attempt,
+            repo: pr.repo,
+            number: pr.number,
+            type: 'merge',
+          })
+          notify(`✅ Merged **${pr.repo}#${pr.number}** — ${pr.title}`)
+          logActivity('dispatch', `Merged: ${pr.repo}#${pr.number}`)
+        } else {
+          console.error(`[dispatch] Auto-merge failed for ${pr.repo}#${pr.number}`)
+          setIssueState(key, {
+            status: 'failed',
+            attempts: attempt,
+            repo: pr.repo,
+            number: pr.number,
+            type: 'merge',
+            error: 'gh pr merge returned empty (check rate limits or PR state)',
+          })
+          notify(`❌ Auto-merge failed for **${pr.repo}#${pr.number}**`)
+        }
+
+        lastDispatchTime = Date.now()
+        dispatchStatus = 'idle'
+        return
+      }
+    }
+
     lastDispatchTime = Date.now()
     dispatchStatus = 'idle'
     logActivity('dispatch', 'No actionable work found')
@@ -604,6 +666,18 @@ export async function hasPendingWork(): Promise<boolean> {
     return true
   }
 
+  // Check for auto-merge candidates
+  if (config.features.autoMerge) {
+    const mergeReadyPrs = await getMergeReadyPrs(username)
+    for (const pr of mergeReadyPrs) {
+      if (!(await isRepoAllowed(pr.repo))) continue
+      const key = `merge:${pr.repo}#${pr.number}`
+      const state = getIssueState(key)
+      if (state?.status === 'done') continue
+      return true
+    }
+  }
+
   return false
 }
 
@@ -652,6 +726,19 @@ export async function getFailingPrsForIssue(username: string, repo: string, issu
 export async function getPrsWithChangesRequested(username: string) {
   return prisma.githubPr.findMany({
     where: { author: username, state: 'OPEN', reviewDecision: 'CHANGES_REQUESTED' },
+  })
+}
+
+/** Get open PRs that are ready to merge (CI passing, mergeable, approved) */
+export async function getMergeReadyPrs(username: string) {
+  return prisma.githubPr.findMany({
+    where: {
+      author: username,
+      state: 'OPEN',
+      ciStatus: 'passing',
+      mergeable: 'MERGEABLE',
+      reviewDecision: 'APPROVED',
+    },
   })
 }
 
