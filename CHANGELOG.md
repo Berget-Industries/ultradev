@@ -1,5 +1,11 @@
 # ultradev-dashboard
 
+## 1.8.0
+
+### Minor Changes
+
+- [#44](https://github.com/Berget-Industries/ultradev/pull/44) [`3319399`](https://github.com/Berget-Industries/ultradev/commit/3319399a547c557ce2c379dacce96012b252fa20) Thanks [@willebergh](https://github.com/willebergh)! - Wire up auto-merge as priority 4 in the dispatch loop. When enabled, PRs that are approved, CI passing, and mergeable are automatically squash-merged via `gh pr merge` — no worker spawn needed.
+
 ## 1.7.0
 
 ### Minor Changes
