@@ -1,7 +1,7 @@
 reviews:
   auto_review:
     enabled: true
-  request_changes_workflow: false
+  request_changes_workflow: true
   review_status: true
   approve:
     enabled: true
