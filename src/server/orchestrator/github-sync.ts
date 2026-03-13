@@ -133,7 +133,22 @@ async function syncIssues(username: string) {
   }
 
   const issues = Array.from(issueMap.values())
-  if (issues.length === 0) return 0
+
+  // Track whether each search succeeded (returned valid JSON, even if empty)
+  // vs failed (returned '' from gh() error). Empty string means gh CLI error.
+  const assignedSucceeded = assignedRaw !== '' || assignedIssues.length > 0
+  const mentionedSucceeded = mentionedRaw !== '' || mentionedIssues.length > 0
+
+  if (issues.length === 0) {
+    // If at least one search succeeded with 0 results, still run stale cleanup
+    if (!assignedSucceeded && !mentionedSucceeded) {
+      // Both searches failed (CLI errors) — skip cleanup to avoid false positives
+      return 0
+    }
+
+    // At least one search succeeded — run stale cleanup below
+    // (fall through with empty issues array)
+  }
 
   for (const issue of issues) {
     const repo = issue.repository?.nameWithOwner || ''
@@ -209,7 +224,7 @@ async function syncPrs(username: string, repos: string[]) {
   const seenPrs = new Set<string>()
 
   // Helper to upsert a single PR into the DB
-  async function upsertPr(repo: string, pr: any) {
+  async function upsertPr(repo: string, pr: any, author?: string) {
     const ciStatus = deriveCiStatus(pr.statusCheckRollup || null)
 
     // Extract linked issue numbers
@@ -269,7 +284,7 @@ async function syncPrs(username: string, repos: string[]) {
         state: pr.state,
         headRef: pr.headRefName,
         baseRef: pr.baseRefName,
-        author: username,
+        author: author || username,
         mergeable: pr.mergeable || 'UNKNOWN',
         reviewDecision: pr.reviewDecision || '',
         ciStatus,
@@ -322,7 +337,7 @@ async function syncPrs(username: string, repos: string[]) {
   // --- Phase 2: Cross-repo queries for mentions and review-requested ---
   // `gh search prs` returns a different JSON shape: repository.nameWithOwner for repo,
   // and field names like headRepositoryOwner, etc. We need to map fields accordingly.
-  const searchJsonFields = 'repository,number,title,url,state,headRefName,baseRefName,body,createdAt,updatedAt'
+  const searchJsonFields = 'repository,number,title,url,state,headRefName,baseRefName,body,createdAt,updatedAt,author'
 
   const mentionedRaw = gh(
     'search', 'prs',
@@ -366,25 +381,27 @@ async function syncPrs(username: string, repos: string[]) {
     const repo = searchPr.repository?.nameWithOwner || ''
     if (!repo) continue
 
-    // Fetch full PR details
+    // Fetch full PR details (include author for correct attribution)
     const detailRaw = gh(
       'pr', 'view', String(searchPr.number),
       '--repo', repo,
-      '--json', 'number,title,url,state,headRefName,baseRefName,body,mergeable,reviewDecision,statusCheckRollup,reviews,createdAt,updatedAt'
+      '--json', 'number,title,url,state,headRefName,baseRefName,body,mergeable,reviewDecision,statusCheckRollup,reviews,createdAt,updatedAt,author'
     )
 
     if (detailRaw) {
       let fullPr: any
       try { fullPr = JSON.parse(detailRaw) } catch { fullPr = null }
       if (fullPr) {
+        const prAuthor = fullPr.author?.login || ''
         seenPrs.add(key)
-        await upsertPr(repo, fullPr)
+        await upsertPr(repo, fullPr, prAuthor)
         totalPrs++
         continue
       }
     }
 
     // Fallback: upsert with what we have from the search result (limited fields)
+    const fallbackAuthor = searchPr.author?.login || ''
     seenPrs.add(key)
     await upsertPr(repo, {
       number: searchPr.number,
@@ -400,8 +417,31 @@ async function syncPrs(username: string, repos: string[]) {
       reviews: [],
       createdAt: searchPr.createdAt,
       updatedAt: searchPr.updatedAt,
-    })
+    }, fallbackAuthor)
     totalPrs++
+  }
+
+  // --- Phase 2 stale cleanup: mark cross-repo PRs as closed if no longer in results ---
+  // Only clean up PRs NOT authored by the sync user (phase-2 PRs)
+  const crossRepoNumbers = new Set(
+    Array.from(crossRepoPrMap.keys()) // "repo#number" strings still in results
+  )
+  const dbCrossRepoPrs = await prisma.githubPr.findMany({
+    where: {
+      state: 'OPEN',
+      NOT: { author: username },
+    },
+    select: { repo: true, number: true },
+  })
+  for (const dbPr of dbCrossRepoPrs) {
+    const key = `${dbPr.repo}#${dbPr.number}`
+    // Also skip if it was seen in phase 1 (per-repo author queries)
+    if (!crossRepoNumbers.has(key) && !seenPrs.has(key)) {
+      await prisma.githubPr.updateMany({
+        where: { repo: dbPr.repo, number: dbPr.number, state: 'OPEN' },
+        data: { state: 'CLOSED', syncedAt: new Date() },
+      })
+    }
   }
 
   return totalPrs
@@ -441,9 +481,31 @@ export async function syncGitHub() {
       distinct: ['repo'],
       select: { repo: true },
     })
+
+    // Seed repos from a global authored-PR search to catch PRs in repos with no issues
+    // (especially important on cold starts when the DB is empty)
+    const authoredPrRepos: string[] = []
+    const authoredSearchRaw = gh(
+      'search', 'prs',
+      '--author', username,
+      '--state', 'open',
+      '--json', 'repository',
+      '--limit', '50'
+    )
+    if (authoredSearchRaw) {
+      try {
+        const authoredSearchResults = JSON.parse(authoredSearchRaw)
+        for (const result of authoredSearchResults) {
+          const repo = result.repository?.nameWithOwner
+          if (repo) authoredPrRepos.push(repo)
+        }
+      } catch { /* ignore parse errors */ }
+    }
+
     const repos = Array.from(new Set([
       ...issueRepoRows.map(r => r.repo),
       ...prRepoRows.map(r => r.repo),
+      ...authoredPrRepos,
     ]))
 
     const prCount = await syncPrs(username, repos)
@@ -641,30 +703,66 @@ async function dispatch() {
         const state = getIssueState(key)
         const attempt = (state?.attempts || 0) + 1
 
-        console.log(`[dispatch] Auto-merging: ${pr.repo}#${pr.number} — ${pr.title} (attempt ${attempt})`)
-        logActivity('dispatch', `Auto-merging: ${pr.repo}#${pr.number} (intelligent: ${decision.reasoning})`)
-        notify(`🚀 Auto-merging **${pr.repo}#${pr.number}** — ${pr.title}`)
-
+        // Revalidate PR state against live GitHub data before merging
+        let canMerge = true
         try {
-          const { stdout: mergeOutput } = await execFileAsync('gh', [
-            'pr', 'merge', String(pr.number),
+          const { stdout: liveRaw } = await execFileAsync('gh', [
+            'pr', 'view', String(pr.number),
             '--repo', pr.repo,
-            '--squash',
-            '--delete-branch',
+            '--json', 'state,mergeable,reviewDecision,statusCheckRollup',
           ], {
             encoding: 'utf-8',
-            timeout: 30_000,
+            timeout: 15_000,
             env: { ...process.env, GH_PAGER: '' },
           })
-          if (mergeOutput.trim()) console.log(`[dispatch] Merge output: ${mergeOutput.trim()}`)
-          setIssueState(key, { status: 'done', attempts: attempt, repo: pr.repo, number: pr.number, type: 'merge' })
-          notify(`✅ Merged **${pr.repo}#${pr.number}** — ${pr.title}`)
-          logActivity('dispatch', `Merged: ${pr.repo}#${pr.number}`)
-        } catch (mergeErr: any) {
-          const errMsg = mergeErr?.stderr || mergeErr?.message || 'gh pr merge failed'
-          console.error(`[dispatch] Auto-merge failed for ${pr.repo}#${pr.number}: ${errMsg}`)
-          setIssueState(key, { status: 'failed', attempts: attempt, repo: pr.repo, number: pr.number, type: 'merge', error: errMsg })
-          notify(`❌ Auto-merge failed for **${pr.repo}#${pr.number}**`)
+          const livePr = JSON.parse(liveRaw.trim())
+          const liveCi = deriveCiStatus(livePr.statusCheckRollup || null)
+          if (livePr.state !== 'OPEN') {
+            console.log(`[dispatch] Auto-merge skipped: ${pr.repo}#${pr.number} is no longer OPEN (${livePr.state})`)
+            canMerge = false
+          } else if (livePr.reviewDecision !== 'APPROVED') {
+            console.log(`[dispatch] Auto-merge skipped: ${pr.repo}#${pr.number} review is ${livePr.reviewDecision}`)
+            canMerge = false
+          } else if (liveCi !== 'passing') {
+            console.log(`[dispatch] Auto-merge skipped: ${pr.repo}#${pr.number} CI is ${liveCi}`)
+            canMerge = false
+          } else if (livePr.mergeable !== 'MERGEABLE') {
+            console.log(`[dispatch] Auto-merge skipped: ${pr.repo}#${pr.number} mergeable is ${livePr.mergeable}`)
+            canMerge = false
+          }
+        } catch (revalErr: any) {
+          console.warn(`[dispatch] Auto-merge revalidation failed for ${pr.repo}#${pr.number}: ${revalErr.message} — skipping merge`)
+          canMerge = false
+        }
+
+        if (!canMerge) {
+          logActivity('dispatch', `Auto-merge skipped (revalidation failed): ${pr.repo}#${pr.number}`)
+        } else {
+          console.log(`[dispatch] Auto-merging: ${pr.repo}#${pr.number} — ${pr.title} (attempt ${attempt})`)
+          logActivity('dispatch', `Auto-merging: ${pr.repo}#${pr.number} (intelligent: ${decision.reasoning})`)
+          notify(`🚀 Auto-merging **${pr.repo}#${pr.number}** — ${pr.title}`)
+
+          try {
+            const { stdout: mergeOutput } = await execFileAsync('gh', [
+              'pr', 'merge', String(pr.number),
+              '--repo', pr.repo,
+              '--squash',
+              '--delete-branch',
+            ], {
+              encoding: 'utf-8',
+              timeout: 30_000,
+              env: { ...process.env, GH_PAGER: '' },
+            })
+            if (mergeOutput.trim()) console.log(`[dispatch] Merge output: ${mergeOutput.trim()}`)
+            setIssueState(key, { status: 'done', attempts: attempt, repo: pr.repo, number: pr.number, type: 'merge' })
+            notify(`✅ Merged **${pr.repo}#${pr.number}** — ${pr.title}`)
+            logActivity('dispatch', `Merged: ${pr.repo}#${pr.number}`)
+          } catch (mergeErr: any) {
+            const errMsg = mergeErr?.stderr || mergeErr?.message || 'gh pr merge failed'
+            console.error(`[dispatch] Auto-merge failed for ${pr.repo}#${pr.number}: ${errMsg}`)
+            setIssueState(key, { status: 'failed', attempts: attempt, repo: pr.repo, number: pr.number, type: 'merge', error: errMsg })
+            notify(`❌ Auto-merge failed for **${pr.repo}#${pr.number}**`)
+          }
         }
       }
     } finally {

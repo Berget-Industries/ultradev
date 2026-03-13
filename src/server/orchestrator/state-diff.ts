@@ -1,5 +1,6 @@
 import { createHash } from 'crypto'
 import { isWorkerSlotFree } from './worker-lock.js'
+import { isRepoAllowed } from './allowed-repos.js'
 import { prisma } from '../prisma.js'
 
 interface StateSnapshot {
@@ -13,19 +14,27 @@ interface StateSnapshot {
 let previousSnapshot: StateSnapshot | null = null
 
 export async function hasStateChanged(): Promise<{ changed: boolean; reason: string; snapshot: StateSnapshot }> {
-  // Query ALL open issues
-  const issues = await prisma.githubIssue.findMany({
+  // Query ALL open issues, then filter by isRepoAllowed (same filter as dispatch)
+  const allIssues = await prisma.githubIssue.findMany({
     where: { state: 'OPEN' },
     select: { repo: true, number: true, updatedAt: true },
     orderBy: { number: 'asc' },
   })
+  const issues = []
+  for (const i of allIssues) {
+    if (await isRepoAllowed(i.repo)) issues.push(i)
+  }
 
-  // Query ALL open PRs
-  const prs = await prisma.githubPr.findMany({
+  // Query ALL open PRs, then filter by isRepoAllowed (same filter as dispatch)
+  const allPrs = await prisma.githubPr.findMany({
     where: { state: 'OPEN' },
     select: { repo: true, number: true, updatedAt: true, reviewDecision: true, ciStatus: true, mergeable: true, latestReviewAt: true },
     orderBy: { number: 'asc' },
   })
+  const prs = []
+  for (const pr of allPrs) {
+    if (await isRepoAllowed(pr.repo)) prs.push(pr)
+  }
 
   const workerFree = isWorkerSlotFree()
 

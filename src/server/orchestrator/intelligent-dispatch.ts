@@ -9,10 +9,12 @@ import type { GithubIssue, GithubPr } from '@prisma/client'
 
 // Types for the plate (everything UltraDev could work on)
 export interface PlateItem {
-  type: 'issue' | 'pr_review' | 'conflict' | 'auto_merge'
+  type: 'issue' | 'pr_review' | 'conflict' | 'auto_merge' | 'pr_open'
   repo: string
   number: number
   title: string
+  status: string   // pending | done | in_progress | failed
+  attempts: number
   details: string // human-readable summary
 }
 
@@ -22,7 +24,7 @@ export interface Plate {
 }
 
 export interface DispatchDecision {
-  action: 'handle_issue' | 'handle_pr_review' | 'handle_conflict' | 'auto_merge' | 'skip'
+  action: 'handle_issue' | 'handle_pr_review' | 'handle_conflict' | 'auto_merge' | 'skip' | 'pr_open'
   repo: string
   number: number
   reasoning: string
@@ -50,6 +52,8 @@ export function buildUnifiedPlate(issues: GithubIssue[], prs: GithubPr[]): Plate
       repo: issue.repo,
       number: issue.number,
       title: issue.title,
+      status,
+      attempts,
       details: `Labels: [${labels.join(', ')}]. Status: ${status}. Attempts: ${attempts}.${error} Created: ${issue.createdAt?.toISOString() || 'unknown'}.`,
     })
   }
@@ -63,7 +67,7 @@ export function buildUnifiedPlate(issues: GithubIssue[], prs: GithubPr[]): Plate
     const error = state?.error ? ` Last error: ${state.error}` : ''
     const lastReviewAt = state?.lastReviewAt || null
 
-    // Determine PR type
+    // Determine PR type — only add truly actionable PRs
     let type: PlateItem['type']
     if (pr.reviewDecision === 'APPROVED' && pr.ciStatus === 'passing' && pr.mergeable === 'MERGEABLE') {
       type = 'auto_merge'
@@ -74,19 +78,25 @@ export function buildUnifiedPlate(issues: GithubIssue[], prs: GithubPr[]): Plate
       (pr.reviewDecision === 'REVIEW_REQUIRED' && pr.latestReviewAt != null)
     ) {
       type = 'pr_review'
+    } else if (pr.ciStatus === 'failing') {
+      type = 'pr_review' // CI failures need attention
     } else {
-      type = 'pr_review' // generic PR needing attention
+      // No actionable signal — open PR with no review feedback, no conflicts, no CI failures
+      type = 'pr_open'
     }
 
     const latestReviewIso = pr.latestReviewAt?.toISOString() || 'none'
     const lastAddressedIso = lastReviewAt || 'never'
+    const prUpdatedAtIso = pr.updatedAt?.toISOString() || 'unknown'
 
     items.push({
       type,
       repo: pr.repo,
       number: pr.number,
       title: pr.title,
-      details: `Review: ${pr.reviewDecision || 'none'}. CI: ${pr.ciStatus}. Mergeable: ${pr.mergeable}. Latest review: ${latestReviewIso}. Last addressed: ${lastAddressedIso}. Status: ${status}. Attempts: ${attempts}.${error}`,
+      status,
+      attempts,
+      details: `Review: ${pr.reviewDecision || 'none'}. CI: ${pr.ciStatus}. Mergeable: ${pr.mergeable}. Latest review: ${latestReviewIso}. Last addressed: ${lastAddressedIso}. PR updatedAt: ${prUpdatedAtIso}. Status: ${status}. Attempts: ${attempts}.${error}`,
     })
   }
 
@@ -102,14 +112,24 @@ export async function intelligentDispatch(plate: Plate, config: Config): Promise
     return { action: 'skip', repo: '', number: 0, reasoning: 'Nothing actionable on the plate.' }
   }
 
-  // If only one item, no need to call Claude
-  if (plate.items.length === 1) {
-    const item = plate.items[0]
+  // Filter out items that are done, in_progress, or non-actionable (pr_open)
+  const actionableItems = plate.items.filter(i =>
+    i.status !== 'done' && i.status !== 'in_progress' && i.type !== 'pr_open'
+  )
+
+  if (actionableItems.length === 0) {
+    return { action: 'skip', repo: '', number: 0, reasoning: 'All items are done, in_progress, or have no actionable signal.' }
+  }
+
+  // If only one actionable item, no need to call Claude
+  if (actionableItems.length === 1) {
+    const item = actionableItems[0]
     const actionMap: Record<PlateItem['type'], DispatchDecision['action']> = {
       'issue': 'handle_issue',
       'pr_review': 'handle_pr_review',
       'conflict': 'handle_conflict',
       'auto_merge': 'auto_merge',
+      'pr_open': 'skip',
     }
     return {
       action: actionMap[item.type],
@@ -180,7 +200,7 @@ Respond with ONLY a JSON object (no markdown, no explanation outside the JSON):
 {"action": "handle_issue" | "handle_pr_review" | "handle_conflict" | "auto_merge" | "skip", "repo": "owner/repo", "number": 123, "reasoning": "brief explanation"}`
 }
 
-const VALID_ACTIONS: DispatchDecision['action'][] = ['handle_issue', 'handle_pr_review', 'handle_conflict', 'auto_merge', 'skip']
+const VALID_ACTIONS: DispatchDecision['action'][] = ['handle_issue', 'handle_pr_review', 'handle_conflict', 'auto_merge', 'skip', 'pr_open']
 
 function parseDecision(text: string, plate: Plate): DispatchDecision {
   // Try to extract JSON from the response (match first complete JSON object without nested braces)
@@ -217,14 +237,20 @@ function parseDecision(text: string, plate: Plate): DispatchDecision {
 function fallbackDispatch(plate: Plate): DispatchDecision {
   const priorityOrder: PlateItem['type'][] = ['pr_review', 'conflict', 'issue', 'auto_merge']
 
+  // Filter out done, in_progress, and non-actionable items
+  const actionable = plate.items.filter(i =>
+    i.status !== 'done' && i.status !== 'in_progress' && i.type !== 'pr_open'
+  )
+
   for (const type of priorityOrder) {
-    const item = plate.items.find(i => i.type === type)
+    const item = actionable.find(i => i.type === type)
     if (item) {
       const actionMap: Record<PlateItem['type'], DispatchDecision['action']> = {
         'issue': 'handle_issue',
         'pr_review': 'handle_pr_review',
         'conflict': 'handle_conflict',
         'auto_merge': 'auto_merge',
+        'pr_open': 'skip',
       }
       return {
         action: actionMap[item.type],
