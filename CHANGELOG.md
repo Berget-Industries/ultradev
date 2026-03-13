@@ -1,5 +1,11 @@
 # ultradev-dashboard
 
+## 1.9.0
+
+### Minor Changes
+
+- [#46](https://github.com/Berget-Industries/ultradev/pull/46) [`590ce86`](https://github.com/Berget-Industries/ultradev/commit/590ce865342a4d32f645954ee929aadb86acf1f2) Thanks [@willebergh](https://github.com/willebergh)! - Replace hardcoded dispatch priority waterfall with intelligent Claude-driven dispatch. After each GitHub sync, a state-diff module detects meaningful changes (new issues, PR review status, CI changes, conflicts) and only triggers dispatch when something actually changed. When multiple actionable items exist, Claude reasons about what to work on next instead of following a fixed if/else cascade. Falls back to static priority order if the Claude call fails.
+
 ## 1.8.0
 
 ### Minor Changes
