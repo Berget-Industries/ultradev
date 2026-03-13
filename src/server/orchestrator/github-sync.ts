@@ -182,7 +182,7 @@ async function syncIssues(username: string) {
 
   // Mark issues that are no longer open as closed (stale cleanup)
   // Only do stale cleanup if both queries returned less than 50 results (not truncated)
-  if (assignedIssues.length < 50 && mentionedIssues.length < 50) {
+  if (assignedSucceeded && mentionedSucceeded && assignedIssues.length < 50 && mentionedIssues.length < 50) {
     // Include repos from current results AND repos with open issues in DB
     const resultRepos = new Set(issues.map(i => i.repository?.nameWithOwner).filter(Boolean))
     const dbRepoRows = await prisma.githubIssue.findMany({
@@ -346,6 +346,7 @@ async function syncPrs(username: string, repos: string[]) {
     '--json', searchJsonFields,
     '--limit', '50'
   )
+  const mentionedPrsSucceeded = mentionedRaw !== ''
 
   const reviewRequestedRaw = gh(
     'search', 'prs',
@@ -354,14 +355,21 @@ async function syncPrs(username: string, repos: string[]) {
     '--json', searchJsonFields,
     '--limit', '50'
   )
+  const reviewRequestedPrsSucceeded = reviewRequestedRaw !== ''
 
   // Merge mentioned + review-requested, dedup by repo+number
   const crossRepoPrMap = new Map<string, any>()
 
-  for (const raw of [mentionedRaw, reviewRequestedRaw]) {
+  let mentionedPrsCount = 0
+  let reviewRequestedPrsCount = 0
+
+  for (const [idx, raw] of [mentionedRaw, reviewRequestedRaw].entries()) {
     if (!raw) continue
     let prs: any[]
     try { prs = JSON.parse(raw) } catch { continue }
+
+    if (idx === 0) mentionedPrsCount = prs.length
+    else reviewRequestedPrsCount = prs.length
 
     for (const pr of prs) {
       const repo = pr.repository?.nameWithOwner || ''
@@ -422,25 +430,28 @@ async function syncPrs(username: string, repos: string[]) {
   }
 
   // --- Phase 2 stale cleanup: mark cross-repo PRs as closed if no longer in results ---
-  // Only clean up PRs NOT authored by the sync user (phase-2 PRs)
-  const crossRepoNumbers = new Set(
-    Array.from(crossRepoPrMap.keys()) // "repo#number" strings still in results
-  )
-  const dbCrossRepoPrs = await prisma.githubPr.findMany({
-    where: {
-      state: 'OPEN',
-      NOT: { author: username },
-    },
-    select: { repo: true, number: true },
-  })
-  for (const dbPr of dbCrossRepoPrs) {
-    const key = `${dbPr.repo}#${dbPr.number}`
-    // Also skip if it was seen in phase 1 (per-repo author queries)
-    if (!crossRepoNumbers.has(key) && !seenPrs.has(key)) {
-      await prisma.githubPr.updateMany({
-        where: { repo: dbPr.repo, number: dbPr.number, state: 'OPEN' },
-        data: { state: 'CLOSED', syncedAt: new Date() },
-      })
+  // Only run if BOTH phase-2 searches succeeded AND neither was truncated (< 50 results)
+  if (mentionedPrsSucceeded && reviewRequestedPrsSucceeded && mentionedPrsCount < 50 && reviewRequestedPrsCount < 50) {
+    // Only clean up PRs NOT authored by the sync user (phase-2 PRs)
+    const crossRepoNumbers = new Set(
+      Array.from(crossRepoPrMap.keys()) // "repo#number" strings still in results
+    )
+    const dbCrossRepoPrs = await prisma.githubPr.findMany({
+      where: {
+        state: 'OPEN',
+        NOT: { author: username },
+      },
+      select: { repo: true, number: true },
+    })
+    for (const dbPr of dbCrossRepoPrs) {
+      const key = `${dbPr.repo}#${dbPr.number}`
+      // Also skip if it was seen in phase 1 (per-repo author queries)
+      if (!crossRepoNumbers.has(key) && !seenPrs.has(key)) {
+        await prisma.githubPr.updateMany({
+          where: { repo: dbPr.repo, number: dbPr.number, state: 'OPEN' },
+          data: { state: 'CLOSED', syncedAt: new Date() },
+        })
+      }
     }
   }
 

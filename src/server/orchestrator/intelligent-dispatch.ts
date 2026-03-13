@@ -139,7 +139,8 @@ export async function intelligentDispatch(plate: Plate, config: Config): Promise
     }
   }
 
-  const prompt = buildDispatchPrompt(plate)
+  const actionablePlate: Plate = { ...plate, items: actionableItems }
+  const prompt = buildDispatchPrompt(actionablePlate)
 
   try {
     const { stdout } = await execFileAsync(config.claude.command, [
@@ -160,13 +161,13 @@ export async function intelligentDispatch(plate: Plate, config: Config): Promise
       (Array.isArray(parsed) ? parsed.find((b: any) => b.type === 'text')?.text : null) ||
       JSON.stringify(parsed)
 
-    const decision = parseDecision(text, plate)
+    const decision = parseDecision(text, actionablePlate)
     logActivity('intelligent-dispatch', `Decision: ${decision.action} ${decision.repo}#${decision.number} — ${decision.reasoning}`)
     return decision
   } catch (err: any) {
     console.error('[intelligent-dispatch] Claude call failed, will use fallback:', err.message)
     logActivity('intelligent-dispatch', `Claude call failed: ${err.message} — using fallback`)
-    return fallbackDispatch(plate)
+    return fallbackDispatch(actionablePlate)
   }
 }
 
