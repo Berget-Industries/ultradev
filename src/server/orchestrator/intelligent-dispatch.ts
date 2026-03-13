@@ -4,7 +4,6 @@ import type { Config } from './config.js'
 import { getIssueState } from './state.js'
 
 const execFileAsync = promisify(execFile)
-import { scoreIssue, formatScore } from './prioritize.js'
 import { logActivity } from './activity-log.js'
 import type { GithubIssue, GithubPr } from '@prisma/client'
 
@@ -29,65 +28,65 @@ export interface DispatchDecision {
   reasoning: string
 }
 
-// Build the plate summary from DB state
-export function buildPlate(
-  issues: GithubIssue[],
-  changesRequestedPrs: GithubPr[],
-  conflictingPrs: GithubPr[],
-  mergeReadyPrs: GithubPr[],
-): Plate {
+/**
+ * Unified plate builder — receives ALL open issues and PRs (already filtered by isRepoAllowed).
+ * Claude's intelligent dispatch sees everything and decides what to work on, including
+ * items that are done, in_progress, or at max retries — it can make informed decisions.
+ */
+export function buildUnifiedPlate(issues: GithubIssue[], prs: GithubPr[]): Plate {
   const items: PlateItem[] = []
 
-  for (const pr of changesRequestedPrs) {
-    const key = `pr:${pr.repo}#${pr.number}`
-    const state = getIssueState(key)
-    const attempts = state?.attempts || 0
-    items.push({
-      type: 'pr_review',
-      repo: pr.repo,
-      number: pr.number,
-      title: pr.title,
-      details: `Review feedback needs addressing. Attempts: ${attempts}. Latest review: ${pr.latestReviewAt?.toISOString() || 'unknown'}. CI: ${pr.ciStatus}.`,
-    })
-  }
-
-  for (const pr of conflictingPrs) {
-    const key = `conflict:${pr.repo}#${pr.number}`
-    const state = getIssueState(key)
-    const attempts = state?.attempts || 0
-    items.push({
-      type: 'conflict',
-      repo: pr.repo,
-      number: pr.number,
-      title: pr.title,
-      details: `Merge conflict on branch ${pr.headRef} → ${pr.baseRef}. Attempts: ${attempts}.`,
-    })
-  }
-
+  // --- Issues ---
   for (const issue of issues) {
     const key = `${issue.repo}#${issue.number}`
     const state = getIssueState(key)
     const labels = Array.isArray(issue.labels) ? (issue.labels as string[]) : []
-    const score = scoreIssue({ labels, createdAt: issue.createdAt?.toISOString() }, state)
+    const status = state?.status || 'pending'
     const attempts = state?.attempts || 0
-    const madeProgress = state?.madeProgress ? ' (made progress last attempt)' : ''
+    const error = state?.error ? ` Last error: ${state.error}` : ''
 
     items.push({
       type: 'issue',
       repo: issue.repo,
       number: issue.number,
       title: issue.title,
-      details: `Labels: [${labels.join(', ')}]. Priority score: ${score.total} (${formatScore(key, score)}). Attempts: ${attempts}${madeProgress}. Created: ${issue.createdAt?.toISOString() || 'unknown'}.`,
+      details: `Labels: [${labels.join(', ')}]. Status: ${status}. Attempts: ${attempts}.${error} Created: ${issue.createdAt?.toISOString() || 'unknown'}.`,
     })
   }
 
-  for (const pr of mergeReadyPrs) {
+  // --- PRs ---
+  for (const pr of prs) {
+    const key = `pr:${pr.repo}#${pr.number}`
+    const state = getIssueState(key)
+    const status = state?.status || 'pending'
+    const attempts = state?.attempts || 0
+    const error = state?.error ? ` Last error: ${state.error}` : ''
+    const lastReviewAt = state?.lastReviewAt || null
+
+    // Determine PR type
+    let type: PlateItem['type']
+    if (pr.reviewDecision === 'APPROVED' && pr.ciStatus === 'passing' && pr.mergeable === 'MERGEABLE') {
+      type = 'auto_merge'
+    } else if (pr.mergeable === 'CONFLICTING') {
+      type = 'conflict'
+    } else if (
+      pr.reviewDecision === 'CHANGES_REQUESTED' ||
+      (pr.reviewDecision === 'REVIEW_REQUIRED' && pr.latestReviewAt != null)
+    ) {
+      type = 'pr_review'
+    } else {
+      type = 'pr_review' // generic PR needing attention
+    }
+
+    const latestReviewIso = pr.latestReviewAt?.toISOString() || 'none'
+    const lastAddressedIso = lastReviewAt || 'never'
+
     items.push({
-      type: 'auto_merge',
+      type,
       repo: pr.repo,
       number: pr.number,
       title: pr.title,
-      details: `CI passing, approved, mergeable. Ready to squash-merge.`,
+      details: `Review: ${pr.reviewDecision || 'none'}. CI: ${pr.ciStatus}. Mergeable: ${pr.mergeable}. Latest review: ${latestReviewIso}. Last addressed: ${lastAddressedIso}. Status: ${status}. Attempts: ${attempts}.${error}`,
     })
   }
 
@@ -156,24 +155,27 @@ function buildDispatchPrompt(plate: Plate): string {
     `${i + 1}. [${item.type}] ${item.repo}#${item.number}: ${item.title}\n   ${item.details}`
   ).join('\n\n')
 
-  return `You are UltraDev's dispatch brain. You decide what to work on next.
+  return `You are UltraDev's dispatch brain. Below are ALL open issues and PRs across all repos. Each has a state (pending/done/failed/in_progress) and an attempt count from previous work cycles. Your job: pick ONE item to work on, or skip if nothing is actionable.
 
-## Current plate (${plate.items.length} items):
+## Current plate (${plate.items.length} items, time: ${plate.currentTime}):
 
 ${itemList}
 
-## Guidelines (not strict rules — use your judgment):
-- PR review feedback is usually urgent — reviewers are waiting
-- Merge conflicts block progress on existing work
-- Issues with partial progress should often be finished before starting new ones
-- Auto-merging approved PRs is quick and clears the queue
-- Consider the overall state: if there are many open PRs, maybe focus on getting them merged rather than creating more
-- Higher priority scores on issues generally mean more urgent work
-- Items with many failed attempts might need a different approach or should be deprioritized
+## Decision guidelines:
+- status='done' with no new activity since last addressed → SKIP (already handled)
+- status='done' but "Latest review" timestamp > "Last addressed" timestamp → NEW FEEDBACK arrived, should iterate on the PR
+- status='in_progress' → SKIP (a worker is already on it)
+- status='failed' → may be worth retrying if attempts < 3
+- PR reviews (especially from human reviewers requesting changes) are urgent — reviewers are waiting
+- Merge conflicts block progress on existing work — resolve them
+- Auto-mergeable PRs (type=auto_merge) are quick wins — merge them to clear the queue
+- Items with many failed attempts (3+) should be deprioritized — they may need human intervention
+- Consider the big picture: many open PRs → focus on getting them merged rather than creating more
+- New issues (status='pending', attempts=0) are fair game
 
-## Your decision
+## Response format
 
-Pick ONE item to work on next. Respond with ONLY a JSON object (no markdown, no explanation outside the JSON):
+Respond with ONLY a JSON object (no markdown, no explanation outside the JSON):
 
 {"action": "handle_issue" | "handle_pr_review" | "handle_conflict" | "auto_merge" | "skip", "repo": "owner/repo", "number": 123, "reasoning": "brief explanation"}`
 }

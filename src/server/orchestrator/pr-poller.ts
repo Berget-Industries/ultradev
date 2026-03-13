@@ -1,50 +1,12 @@
 import { execFileSync } from 'child_process'
-import { getIssueState, setIssueState, getAllIssues } from './state.js'
+import { getIssueState, setIssueState } from './state.js'
 import { spawnPrWorker } from './pr-worker.js'
 import { makeLogPath } from './worker.js'
 import { notify } from './notifier.js'
 import { releaseWorkerSlot } from './worker-lock.js'
-import { logActivity } from './activity-log.js'
-import { loadConfig } from './config.js'
-import { getPrsWithChangesRequested } from './github-sync.js'
 import type { Config } from './config.js'
 import type { IssueState } from './state.js'
 import type { ProjectConfig } from '../lib/project-config.js'
-
-const MAX_ATTEMPTS = 3
-
-/** Cross-checks state.json with DB — clears stale pr: entries that no longer have CHANGES_REQUESTED */
-export async function cleanStalePrStates(): Promise<void> {
-  const issues = getAllIssues()
-  let dbPrs: any[] | null = null
-
-  for (const [key, state] of Object.entries(issues)) {
-    if (!key.startsWith('pr:')) continue
-    if (state.status !== 'failed' && state.status !== 'pending') continue
-
-    // Lazy load DB PRs
-    if (dbPrs === null) {
-      try {
-        const config = loadConfig()
-        dbPrs = await getPrsWithChangesRequested(config.github.username)
-      } catch { dbPrs = [] }
-    }
-
-    // Extract repo#number from key like "pr:owner/repo#123"
-    const keyWithoutPrefix = key.slice(3) // remove "pr:"
-    const [repo, numStr] = keyWithoutPrefix.split('#')
-    const num = parseInt(numStr)
-
-    const stillNeedsWork = dbPrs.some(p => p.repo === repo && p.number === num)
-    if (!stillNeedsWork) {
-      console.log(`[pr-poller] Clearing stale state for ${key} — no longer has changes_requested in DB`)
-      setIssueState(key, { status: 'done' })
-    }
-  }
-}
-
-
-
 
 interface PrSummary {
   number: number
