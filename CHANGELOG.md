@@ -1,5 +1,19 @@
 # ultradev-dashboard
 
+## 1.10.0
+
+### Minor Changes
+
+- [#49](https://github.com/Berget-Industries/ultradev/pull/49) [`5c9a080`](https://github.com/Berget-Industries/ultradev/commit/5c9a08042ed68afd0909ce4440e99c1151a18d43) Thanks [@bergetUltraDev](https://github.com/bergetUltraDev)! - Unified dispatch — give Claude full plate instead of pre-filtered categories
+
+  - Widened sync to fetch issues (assigned + mentioned) and PRs (authored + mentioned + review-requested)
+  - Removed category pre-filtering: all open items go to Claude's intelligent dispatcher
+  - Deleted recoverStuckJobs — Claude handles re-work decisions
+  - Simplified state-diff to hash all open items via Prisma
+  - Fixed REVIEW_REQUIRED PRs being invisible to dispatch
+  - Re-open done PRs with new feedback before filtering
+  - Revalidate PR state before auto-merge
+
 ## 1.9.0
 
 ### Minor Changes
