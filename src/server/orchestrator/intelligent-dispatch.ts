@@ -86,12 +86,18 @@ export function buildUnifiedPlate(issues: GithubIssue[], prs: GithubPr[]): Plate
         ? `merge:${pr.repo}#${pr.number}`
         : `pr:${pr.repo}#${pr.number}`
     const state = getIssueState(stateKey)
-    const status = state?.status || 'pending'
+    const rawStatus = state?.status || 'pending'
     const attempts = state?.attempts || 0
     const error = state?.error ? ` Last error: ${state.error}` : ''
     // Always read lastReviewAt from the pr: key since that's where review feedback is tracked
     const reviewState = type !== 'pr_review' ? getIssueState(`pr:${pr.repo}#${pr.number}`) : state
     const lastReviewAt = reviewState?.lastReviewAt || null
+
+    // Re-open done PRs that have new feedback since we last addressed them
+    const hasNewFeedback =
+      !!pr.latestReviewAt &&
+      (!lastReviewAt || pr.latestReviewAt.getTime() > new Date(lastReviewAt).getTime())
+    const status = rawStatus === 'done' && hasNewFeedback ? 'pending' : rawStatus
 
     const latestReviewIso = pr.latestReviewAt?.toISOString() || 'none'
     const lastAddressedIso = lastReviewAt || 'never'
