@@ -24,7 +24,7 @@ export interface Plate {
 }
 
 export interface DispatchDecision {
-  action: 'handle_issue' | 'handle_pr_review' | 'handle_conflict' | 'auto_merge' | 'skip' | 'pr_open'
+  action: 'handle_issue' | 'handle_pr_review' | 'handle_conflict' | 'auto_merge' | 'skip'
   repo: string
   number: number
   reasoning: string
@@ -60,13 +60,6 @@ export function buildUnifiedPlate(issues: GithubIssue[], prs: GithubPr[]): Plate
 
   // --- PRs ---
   for (const pr of prs) {
-    const key = `pr:${pr.repo}#${pr.number}`
-    const state = getIssueState(key)
-    const status = state?.status || 'pending'
-    const attempts = state?.attempts || 0
-    const error = state?.error ? ` Last error: ${state.error}` : ''
-    const lastReviewAt = state?.lastReviewAt || null
-
     // Determine PR type — only add truly actionable PRs
     let type: PlateItem['type']
     if (pr.reviewDecision === 'APPROVED' && pr.ciStatus === 'passing' && pr.mergeable === 'MERGEABLE') {
@@ -84,6 +77,21 @@ export function buildUnifiedPlate(issues: GithubIssue[], prs: GithubPr[]): Plate
       // No actionable signal — open PR with no review feedback, no conflicts, no CI failures
       type = 'pr_open'
     }
+
+    // Use the correct state key matching what dispatch writes:
+    // conflict: -> conflict:repo#number, auto_merge: -> merge:repo#number, else -> pr:repo#number
+    const stateKey = type === 'conflict'
+      ? `conflict:${pr.repo}#${pr.number}`
+      : type === 'auto_merge'
+        ? `merge:${pr.repo}#${pr.number}`
+        : `pr:${pr.repo}#${pr.number}`
+    const state = getIssueState(stateKey)
+    const status = state?.status || 'pending'
+    const attempts = state?.attempts || 0
+    const error = state?.error ? ` Last error: ${state.error}` : ''
+    // Always read lastReviewAt from the pr: key since that's where review feedback is tracked
+    const reviewState = type !== 'pr_review' ? getIssueState(`pr:${pr.repo}#${pr.number}`) : state
+    const lastReviewAt = reviewState?.lastReviewAt || null
 
     const latestReviewIso = pr.latestReviewAt?.toISOString() || 'none'
     const lastAddressedIso = lastReviewAt || 'never'
@@ -201,7 +209,7 @@ Respond with ONLY a JSON object (no markdown, no explanation outside the JSON):
 {"action": "handle_issue" | "handle_pr_review" | "handle_conflict" | "auto_merge" | "skip", "repo": "owner/repo", "number": 123, "reasoning": "brief explanation"}`
 }
 
-const VALID_ACTIONS: DispatchDecision['action'][] = ['handle_issue', 'handle_pr_review', 'handle_conflict', 'auto_merge', 'skip', 'pr_open']
+const VALID_ACTIONS: DispatchDecision['action'][] = ['handle_issue', 'handle_pr_review', 'handle_conflict', 'auto_merge', 'skip']
 
 function parseDecision(text: string, plate: Plate): DispatchDecision {
   // Try to extract JSON from the response (match first complete JSON object without nested braces)

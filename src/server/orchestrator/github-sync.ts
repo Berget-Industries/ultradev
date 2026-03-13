@@ -408,24 +408,37 @@ async function syncPrs(username: string, repos: string[]) {
       }
     }
 
-    // Fallback: upsert with what we have from the search result (limited fields)
+    // Fallback: only upsert if the PR doesn't already exist in the DB
+    // (existing data with real review/CI metadata is better than degraded fallback defaults)
     const fallbackAuthor = searchPr.author?.login || ''
     seenPrs.add(key)
-    await upsertPr(repo, {
-      number: searchPr.number,
-      title: searchPr.title,
-      url: searchPr.url,
-      state: searchPr.state,
-      headRefName: searchPr.headRefName || '',
-      baseRefName: searchPr.baseRefName || '',
-      body: searchPr.body || '',
-      mergeable: 'UNKNOWN',
-      reviewDecision: '',
-      statusCheckRollup: [],
-      reviews: [],
-      createdAt: searchPr.createdAt,
-      updatedAt: searchPr.updatedAt,
-    }, fallbackAuthor)
+    const existingPr = await prisma.githubPr.findUnique({
+      where: { repo_number: { repo, number: searchPr.number } }
+    })
+    if (existingPr) {
+      // Just update syncedAt, don't overwrite good data with fallback defaults
+      await prisma.githubPr.update({
+        where: { repo_number: { repo, number: searchPr.number } },
+        data: { syncedAt: new Date() }
+      })
+    } else {
+      // New PR, use fallback data
+      await upsertPr(repo, {
+        number: searchPr.number,
+        title: searchPr.title,
+        url: searchPr.url,
+        state: searchPr.state,
+        headRefName: searchPr.headRefName || '',
+        baseRefName: searchPr.baseRefName || '',
+        body: searchPr.body || '',
+        mergeable: 'UNKNOWN',
+        reviewDecision: '',
+        statusCheckRollup: [],
+        reviews: [],
+        createdAt: searchPr.createdAt,
+        updatedAt: searchPr.updatedAt,
+      }, fallbackAuthor)
+    }
     totalPrs++
   }
 
