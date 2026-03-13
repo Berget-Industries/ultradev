@@ -17,12 +17,12 @@ import { makeLogPath } from './worker.js'
 import { getIssueState, setIssueState } from './state.js'
 import { notify } from './notifier.js'
 import { isRepoAllowed } from './allowed-repos.js'
-import { scoreIssue, formatScore } from './prioritize.js'
+import { scoreIssue, formatScore } from './prioritize.js'  // still used in handle_issue handler
 import { handleIssue } from './github-poller.js'
-import { handlePrReview, cleanStalePrStates } from './pr-poller.js'
+import { handlePrReview } from './pr-poller.js'
 import { handleConflict } from './conflict-poller.js'
 import { hasStateChanged, resetSnapshot } from './state-diff.js'
-import { buildPlate, intelligentDispatch } from './intelligent-dispatch.js'
+import { buildUnifiedPlate, intelligentDispatch } from './intelligent-dispatch.js'
 import { prisma } from '../prisma.js'
 import { resolveProjectConfig, type ProjectConfig } from '../lib/project-config.js'
 import type { Project } from '@prisma/client'
@@ -88,17 +88,67 @@ export function deriveCiStatus(statusCheckRollup: any[] | null): 'passing' | 'fa
 // Sync issues
 // ---------------------------------------------------------------------------
 async function syncIssues(username: string) {
-  const raw = gh(
+  // 1. Fetch issues assigned to the user
+  const assignedRaw = gh(
     'search', 'issues',
     '--assignee', username,
     '--state', 'open',
     '--json', 'repository,number,title,labels,createdAt,updatedAt',
     '--limit', '50'
   )
-  if (!raw) return 0
 
-  let issues: any[]
-  try { issues = JSON.parse(raw) } catch { return 0 }
+  let assignedIssues: any[] = []
+  if (assignedRaw) {
+    try { assignedIssues = JSON.parse(assignedRaw) } catch { /* ignore */ }
+  }
+
+  // 2. Fetch issues where the user is mentioned
+  const mentionedRaw = gh(
+    'search', 'issues',
+    '--mentions', username,
+    '--state', 'open',
+    '--json', 'repository,number,title,labels,createdAt,updatedAt',
+    '--limit', '50'
+  )
+
+  let mentionedIssues: any[] = []
+  if (mentionedRaw) {
+    try { mentionedIssues = JSON.parse(mentionedRaw) } catch { /* ignore */ }
+  }
+
+  // 3. Merge both sets, deduplicating by repo+number (assigned takes priority)
+  const issueMap = new Map<string, any>()
+  for (const issue of assignedIssues) {
+    const repo = issue.repository?.nameWithOwner || ''
+    if (!repo) continue
+    issueMap.set(`${repo}#${issue.number}`, issue)
+  }
+  for (const issue of mentionedIssues) {
+    const repo = issue.repository?.nameWithOwner || ''
+    if (!repo) continue
+    const key = `${repo}#${issue.number}`
+    if (!issueMap.has(key)) {
+      issueMap.set(key, issue)
+    }
+  }
+
+  const issues = Array.from(issueMap.values())
+
+  // Track whether each search succeeded (returned valid JSON, even if empty)
+  // vs failed (returned '' from gh() error). Empty string means gh CLI error.
+  const assignedSucceeded = assignedRaw !== '' || assignedIssues.length > 0
+  const mentionedSucceeded = mentionedRaw !== '' || mentionedIssues.length > 0
+
+  if (issues.length === 0) {
+    // If at least one search succeeded with 0 results, still run stale cleanup
+    if (!assignedSucceeded && !mentionedSucceeded) {
+      // Both searches failed (CLI errors) — skip cleanup to avoid false positives
+      return 0
+    }
+
+    // At least one search succeeded — run stale cleanup below
+    // (fall through with empty issues array)
+  }
 
   for (const issue of issues) {
     const repo = issue.repository?.nameWithOwner || ''
@@ -131,7 +181,8 @@ async function syncIssues(username: string) {
   }
 
   // Mark issues that are no longer open as closed (stale cleanup)
-  if (issues.length < 50) {
+  // Only do stale cleanup if both queries returned less than 50 results (not truncated)
+  if (assignedSucceeded && mentionedSucceeded && assignedIssues.length < 50 && mentionedIssues.length < 50) {
     // Include repos from current results AND repos with open issues in DB
     const resultRepos = new Set(issues.map(i => i.repository?.nameWithOwner).filter(Boolean))
     const dbRepoRows = await prisma.githubIssue.findMany({
@@ -169,6 +220,85 @@ async function syncPrs(username: string, repos: string[]) {
   const prState = firstSyncDone ? 'open' : 'all'
   let totalPrs = 0
 
+  // Track which repo+number combos we've already processed (from per-repo author queries)
+  const seenPrs = new Set<string>()
+
+  // Helper to upsert a single PR into the DB
+  async function upsertPr(repo: string, pr: any, author?: string) {
+    const ciStatus = deriveCiStatus(pr.statusCheckRollup || null)
+
+    // Extract linked issue numbers
+    const linkedIssues = new Set<number>()
+
+    const body: string = pr.body || ''
+    let match: RegExpExecArray | null
+    closingPattern.lastIndex = 0
+    while ((match = closingPattern.exec(body)) !== null) {
+      linkedIssues.add(parseInt(match[1], 10))
+    }
+
+    const repoParts = repo.split('/')
+    const branchPrefix = repoParts.length === 2
+      ? `ultradev/${repoParts[0]}_${repoParts[1]}_`
+      : null
+
+    const branch: string = pr.headRefName || ''
+    if (branchPrefix && branch.startsWith(branchPrefix)) {
+      const suffix = branch.slice(branchPrefix.length)
+      const issueNum = parseInt(suffix, 10)
+      if (!isNaN(issueNum) && issueNum > 0) {
+        linkedIssues.add(issueNum)
+      }
+    }
+
+    const changesRequestedReviews = (pr.reviews || [])
+      .filter((r: any) => r.state === 'CHANGES_REQUESTED' && r.submittedAt)
+      .map((r: any) => r.submittedAt)
+      .sort()
+    const latestReviewAt = changesRequestedReviews.length > 0
+      ? changesRequestedReviews[changesRequestedReviews.length - 1]
+      : null
+
+    await prisma.githubPr.upsert({
+      where: { repo_number: { repo, number: pr.number } },
+      update: {
+        title: pr.title,
+        body,
+        state: pr.state,
+        headRef: pr.headRefName,
+        baseRef: pr.baseRefName,
+        mergeable: pr.mergeable || 'UNKNOWN',
+        reviewDecision: pr.reviewDecision || '',
+        ciStatus,
+        statusCheckRollup: pr.statusCheckRollup || [],
+        linkedIssueNumbers: Array.from(linkedIssues),
+        latestReviewAt: latestReviewAt ? new Date(latestReviewAt) : null,
+        updatedAt: pr.updatedAt ? new Date(pr.updatedAt) : undefined,
+        syncedAt: new Date(),
+      },
+      create: {
+        repo,
+        number: pr.number,
+        title: pr.title,
+        body,
+        state: pr.state,
+        headRef: pr.headRefName,
+        baseRef: pr.baseRefName,
+        author: author || username,
+        mergeable: pr.mergeable || 'UNKNOWN',
+        reviewDecision: pr.reviewDecision || '',
+        ciStatus,
+        statusCheckRollup: pr.statusCheckRollup || [],
+        linkedIssueNumbers: Array.from(linkedIssues),
+        latestReviewAt: latestReviewAt ? new Date(latestReviewAt) : null,
+        createdAt: pr.createdAt ? new Date(pr.createdAt) : undefined,
+        updatedAt: pr.updatedAt ? new Date(pr.updatedAt) : undefined,
+        syncedAt: new Date(),
+      },
+    })
+  }
+
+  // --- Phase 1: Per-repo author queries (existing behavior) ---
   for (const repo of repos) {
     const raw = gh(
       'pr', 'list',
@@ -183,79 +313,9 @@ async function syncPrs(username: string, repos: string[]) {
     let prs: any[]
     try { prs = JSON.parse(raw) } catch { continue }
 
-    const repoParts = repo.split('/')
-    const branchPrefix = repoParts.length === 2
-      ? `ultradev/${repoParts[0]}_${repoParts[1]}_`
-      : null
-
     for (const pr of prs) {
-      const ciStatus = deriveCiStatus(pr.statusCheckRollup || null)
-
-      // Extract linked issue numbers
-      const linkedIssues = new Set<number>()
-
-      const body: string = pr.body || ''
-      let match: RegExpExecArray | null
-      closingPattern.lastIndex = 0
-      while ((match = closingPattern.exec(body)) !== null) {
-        linkedIssues.add(parseInt(match[1], 10))
-      }
-
-      const branch: string = pr.headRefName || ''
-      if (branchPrefix && branch.startsWith(branchPrefix)) {
-        const suffix = branch.slice(branchPrefix.length)
-        const issueNum = parseInt(suffix, 10)
-        if (!isNaN(issueNum) && issueNum > 0) {
-          linkedIssues.add(issueNum)
-        }
-      }
-
-      const changesRequestedReviews = (pr.reviews || [])
-        .filter((r: any) => r.state === 'CHANGES_REQUESTED' && r.submittedAt)
-        .map((r: any) => r.submittedAt)
-        .sort()
-      const latestReviewAt = changesRequestedReviews.length > 0
-        ? changesRequestedReviews[changesRequestedReviews.length - 1]
-        : null
-
-      await prisma.githubPr.upsert({
-        where: { repo_number: { repo, number: pr.number } },
-        update: {
-          title: pr.title,
-          body,
-          state: pr.state,
-          headRef: pr.headRefName,
-          baseRef: pr.baseRefName,
-          mergeable: pr.mergeable || 'UNKNOWN',
-          reviewDecision: pr.reviewDecision || '',
-          ciStatus,
-          statusCheckRollup: pr.statusCheckRollup || [],
-          linkedIssueNumbers: Array.from(linkedIssues),
-          latestReviewAt: latestReviewAt ? new Date(latestReviewAt) : null,
-          updatedAt: pr.updatedAt ? new Date(pr.updatedAt) : undefined,
-          syncedAt: new Date(),
-        },
-        create: {
-          repo,
-          number: pr.number,
-          title: pr.title,
-          body,
-          state: pr.state,
-          headRef: pr.headRefName,
-          baseRef: pr.baseRefName,
-          author: username,
-          mergeable: pr.mergeable || 'UNKNOWN',
-          reviewDecision: pr.reviewDecision || '',
-          ciStatus,
-          statusCheckRollup: pr.statusCheckRollup || [],
-          linkedIssueNumbers: Array.from(linkedIssues),
-          latestReviewAt: latestReviewAt ? new Date(latestReviewAt) : null,
-          createdAt: pr.createdAt ? new Date(pr.createdAt) : undefined,
-          updatedAt: pr.updatedAt ? new Date(pr.updatedAt) : undefined,
-          syncedAt: new Date(),
-        },
-      })
-
+      seenPrs.add(`${repo}#${pr.number}`)
+      await upsertPr(repo, pr)
       totalPrs++
     }
 
@@ -271,6 +331,140 @@ async function syncPrs(username: string, repos: string[]) {
         },
         data: { state: 'CLOSED', syncedAt: new Date() },
       })
+    }
+  }
+
+  // --- Phase 2: Cross-repo queries for mentions and review-requested ---
+  // `gh search prs` returns a different JSON shape: repository.nameWithOwner for repo,
+  // and field names like headRepositoryOwner, etc. We need to map fields accordingly.
+  const searchJsonFields = 'repository,number,title,url,state,headRefName,baseRefName,body,createdAt,updatedAt,author'
+
+  const mentionedRaw = gh(
+    'search', 'prs',
+    '--mentions', username,
+    '--state', 'open',
+    '--json', searchJsonFields,
+    '--limit', '50'
+  )
+  const mentionedPrsSucceeded = mentionedRaw !== ''
+
+  const reviewRequestedRaw = gh(
+    'search', 'prs',
+    '--review-requested', username,
+    '--state', 'open',
+    '--json', searchJsonFields,
+    '--limit', '50'
+  )
+  const reviewRequestedPrsSucceeded = reviewRequestedRaw !== ''
+
+  // Merge mentioned + review-requested, dedup by repo+number
+  const crossRepoPrMap = new Map<string, any>()
+
+  let mentionedPrsCount = 0
+  let reviewRequestedPrsCount = 0
+
+  for (const [idx, raw] of [mentionedRaw, reviewRequestedRaw].entries()) {
+    if (!raw) continue
+    let prs: any[]
+    try { prs = JSON.parse(raw) } catch { continue }
+
+    if (idx === 0) mentionedPrsCount = prs.length
+    else reviewRequestedPrsCount = prs.length
+
+    for (const pr of prs) {
+      const repo = pr.repository?.nameWithOwner || ''
+      if (!repo) continue
+      const key = `${repo}#${pr.number}`
+      // Skip if already fetched via per-repo author query
+      if (seenPrs.has(key)) continue
+      if (!crossRepoPrMap.has(key)) {
+        crossRepoPrMap.set(key, pr)
+      }
+    }
+  }
+
+  // For each cross-repo PR, we need more detail (mergeable, reviewDecision, statusCheckRollup, reviews)
+  // that `gh search prs` doesn't return. Fetch individually via `gh pr view`.
+  for (const [key, searchPr] of crossRepoPrMap) {
+    const repo = searchPr.repository?.nameWithOwner || ''
+    if (!repo) continue
+
+    // Fetch full PR details (include author for correct attribution)
+    const detailRaw = gh(
+      'pr', 'view', String(searchPr.number),
+      '--repo', repo,
+      '--json', 'number,title,url,state,headRefName,baseRefName,body,mergeable,reviewDecision,statusCheckRollup,reviews,createdAt,updatedAt,author'
+    )
+
+    if (detailRaw) {
+      let fullPr: any
+      try { fullPr = JSON.parse(detailRaw) } catch { fullPr = null }
+      if (fullPr) {
+        const prAuthor = fullPr.author?.login || ''
+        seenPrs.add(key)
+        await upsertPr(repo, fullPr, prAuthor)
+        totalPrs++
+        continue
+      }
+    }
+
+    // Fallback: only upsert if the PR doesn't already exist in the DB
+    // (existing data with real review/CI metadata is better than degraded fallback defaults)
+    const fallbackAuthor = searchPr.author?.login || ''
+    seenPrs.add(key)
+    const existingPr = await prisma.githubPr.findUnique({
+      where: { repo_number: { repo, number: searchPr.number } }
+    })
+    if (existingPr) {
+      // Just update syncedAt, don't overwrite good data with fallback defaults
+      await prisma.githubPr.update({
+        where: { repo_number: { repo, number: searchPr.number } },
+        data: { syncedAt: new Date() }
+      })
+    } else {
+      // New PR, use fallback data
+      await upsertPr(repo, {
+        number: searchPr.number,
+        title: searchPr.title,
+        url: searchPr.url,
+        state: searchPr.state,
+        headRefName: searchPr.headRefName || '',
+        baseRefName: searchPr.baseRefName || '',
+        body: searchPr.body || '',
+        mergeable: 'UNKNOWN',
+        reviewDecision: '',
+        statusCheckRollup: [],
+        reviews: [],
+        createdAt: searchPr.createdAt,
+        updatedAt: searchPr.updatedAt,
+      }, fallbackAuthor)
+    }
+    totalPrs++
+  }
+
+  // --- Phase 2 stale cleanup: mark cross-repo PRs as closed if no longer in results ---
+  // Only run if BOTH phase-2 searches succeeded AND neither was truncated (< 50 results)
+  if (mentionedPrsSucceeded && reviewRequestedPrsSucceeded && mentionedPrsCount < 50 && reviewRequestedPrsCount < 50) {
+    // Only clean up PRs NOT authored by the sync user (phase-2 PRs)
+    const crossRepoNumbers = new Set(
+      Array.from(crossRepoPrMap.keys()) // "repo#number" strings still in results
+    )
+    const dbCrossRepoPrs = await prisma.githubPr.findMany({
+      where: {
+        state: 'OPEN',
+        NOT: { author: username },
+      },
+      select: { repo: true, number: true },
+    })
+    for (const dbPr of dbCrossRepoPrs) {
+      const key = `${dbPr.repo}#${dbPr.number}`
+      // Also skip if it was seen in phase 1 (per-repo author queries)
+      if (!crossRepoNumbers.has(key) && !seenPrs.has(key)) {
+        await prisma.githubPr.updateMany({
+          where: { repo: dbPr.repo, number: dbPr.number, state: 'OPEN' },
+          data: { state: 'CLOSED', syncedAt: new Date() },
+        })
+      }
     }
   }
 
@@ -300,12 +494,43 @@ export async function syncGitHub() {
       return
     }
 
-    const repoRows = await prisma.githubIssue.findMany({
+    // Collect repos from open issues AND from open PRs already in the DB
+    const issueRepoRows = await prisma.githubIssue.findMany({
       where: { assignee: username, state: 'OPEN' },
       distinct: ['repo'],
       select: { repo: true },
     })
-    const repos = repoRows.map(r => r.repo)
+    const prRepoRows = await prisma.githubPr.findMany({
+      where: { author: username, state: 'OPEN' },
+      distinct: ['repo'],
+      select: { repo: true },
+    })
+
+    // Seed repos from a global authored-PR search to catch PRs in repos with no issues
+    // (especially important on cold starts when the DB is empty)
+    const authoredPrRepos: string[] = []
+    const authoredSearchRaw = gh(
+      'search', 'prs',
+      '--author', username,
+      '--state', 'open',
+      '--json', 'repository',
+      '--limit', '50'
+    )
+    if (authoredSearchRaw) {
+      try {
+        const authoredSearchResults = JSON.parse(authoredSearchRaw)
+        for (const result of authoredSearchResults) {
+          const repo = result.repository?.nameWithOwner
+          if (repo) authoredPrRepos.push(repo)
+        }
+      } catch { /* ignore parse errors */ }
+    }
+
+    const repos = Array.from(new Set([
+      ...issueRepoRows.map(r => r.repo),
+      ...prRepoRows.map(r => r.repo),
+      ...authoredPrRepos,
+    ]))
 
     const prCount = await syncPrs(username, repos)
 
@@ -315,9 +540,6 @@ export async function syncGitHub() {
 
     console.log(`[github-sync] Synced ${issueCount} issues, ${prCount} PRs across ${repos.length} repo(s)`)
     logActivity('github-sync', `Synced ${issueCount} issues, ${prCount} PRs`)
-
-    // Always run stuck-job recovery regardless of state changes
-    await recoverStuckJobs()
 
     // Check if anything meaningful changed before dispatching
     const diff = await hasStateChanged()
@@ -340,10 +562,11 @@ export async function syncGitHub() {
 // ---------------------------------------------------------------------------
 // Dispatch — decides what to work on after each sync
 // ---------------------------------------------------------------------------
-const MAX_ISSUE_ATTEMPTS = 3
-const MAX_PR_ATTEMPTS = 3
-const MAX_CONFLICT_ATTEMPTS = 2
-const MAX_CI_FIX_ATTEMPTS = 2
+// Default attempt limits — used only for notification display text.
+// Claude decides whether to retry; these are informational fallbacks.
+const DEFAULT_MAX_ISSUE_ATTEMPTS = 3
+const DEFAULT_MAX_PR_ATTEMPTS = 3
+const DEFAULT_MAX_CI_FIX_ATTEMPTS = 2
 
 /** Look up the Project for an owner/repo string and resolve per-project config. */
 async function getProjectConfig(repo: string, config: Config): Promise<{ project: Project | null; pc: ProjectConfig | null }> {
@@ -355,64 +578,6 @@ async function getProjectConfig(repo: string, config: Config): Promise<{ project
   })
   if (!project) return { project: null, pc: null }
   return { project, pc: resolveProjectConfig(project, config) }
-}
-
-/** Recover stuck jobs and reset stale states — runs every sync cycle regardless of state changes */
-async function recoverStuckJobs() {
-  const config = loadConfig()
-  const username = config.github.username
-  const STUCK_TIMEOUT = 20 * 60 * 1000
-
-  await cleanStalePrStates()
-
-  const changesRequestedPrs = await getPrsWithChangesRequested(username)
-  for (const pr of changesRequestedPrs) {
-    const key = `pr:${pr.repo}#${pr.number}`
-    const state = getIssueState(key)
-
-    if (state?.status === 'done') {
-      const latestReviewAt = pr.latestReviewAt?.toISOString() || null
-      if (latestReviewAt && (!state.lastReviewAt || latestReviewAt > state.lastReviewAt)) {
-        console.log(`[recovery] ${key} has new review feedback (${latestReviewAt}) — resetting`)
-        setIssueState(key, { status: 'pending', attempts: 0, notifiedMaxRetries: false })
-      }
-    }
-    if (state?.status === 'in_progress' && Date.now() - (state.updatedAt || 0) > STUCK_TIMEOUT) {
-      setIssueState(key, { status: 'failed', error: 'Timed out (stuck)' })
-    }
-  }
-
-  const conflictPrs = await getConflictingPrs(username)
-  for (const pr of conflictPrs) {
-    const key = `conflict:${pr.repo}#${pr.number}`
-    const state = getIssueState(key)
-    if (state?.status === 'in_progress' && Date.now() - (state.updatedAt || 0) > STUCK_TIMEOUT) {
-      setIssueState(key, { status: 'failed', error: 'Timed out (stuck)' })
-    }
-  }
-
-  const dbIssues = await getOpenIssues(username)
-  for (const issue of dbIssues) {
-    const key = `${issue.repo}#${issue.number}`
-    const state = getIssueState(key)
-
-    if (state?.status === 'done') {
-      const { pc } = await getProjectConfig(issue.repo, config)
-      const maxAttempts = (pc?.maxAttempts ?? MAX_ISSUE_ATTEMPTS) + MAX_CI_FIX_ATTEMPTS
-      const failingPrs = await getFailingPrsForIssue(username, issue.repo, issue.number)
-      if (failingPrs.length > 0 && (state.attempts || 0) < maxAttempts) {
-        const prNums = failingPrs.map(p => `#${p.number}`).join(', ')
-        console.log(`[recovery] ${key} marked done but PR ${prNums} has CI failures — re-queuing`)
-        logActivity('recovery', `Re-queuing ${key}: linked PR CI failing`)
-        setIssueState(key, { status: 'failed', error: `CI still failing on ${prNums}`, notifiedMaxRetries: false })
-        notify(`🔧 **${key}** — CI still failing on ${prNums}, re-queuing to fix`)
-      }
-    }
-    if (state?.status === 'in_progress' && Date.now() - (state.updatedAt || 0) > STUCK_TIMEOUT) {
-      console.log(`[recovery] ${key} appears stuck, marking for retry`)
-      setIssueState(key, { status: 'failed', error: 'Timed out (stuck)' })
-    }
-  }
 }
 
 async function dispatch() {
@@ -430,94 +595,28 @@ async function dispatch() {
   }
 
   const config = loadConfig()
-  const username = config.github.username
   dispatchStatus = 'dispatching'
 
   try {
-    // --- Query current state from DB ---
-    const changesRequestedPrs = await getPrsWithChangesRequested(username)
-    const conflictPrs = await getConflictingPrs(username)
-    const dbIssues = await getOpenIssues(username)
+    // --- 1. Query ALL open items from DB ---
+    const allDbIssues = await prisma.githubIssue.findMany({ where: { state: 'OPEN' } })
+    const allDbPrs = await prisma.githubPr.findMany({ where: { state: 'OPEN' } })
 
-    // --- Filter to actionable items only (allowed repos, under max attempts, not done/in_progress) ---
-    const actionableCrPrs = []
-    for (const pr of changesRequestedPrs) {
-      if (!(await isRepoAllowed(pr.repo))) continue
-      const key = `pr:${pr.repo}#${pr.number}`
-      const state = getIssueState(key)
-      if (state?.status === 'done' || state?.status === 'in_progress') continue
-      const { pc } = await getProjectConfig(pr.repo, config)
-      const max = pc?.maxAttempts ?? MAX_PR_ATTEMPTS
-      if ((state?.attempts || 0) >= max) {
-        if (!state?.notifiedMaxRetries) {
-          notify(`⚠️ **${key}** — Gave up after ${max} attempts on PR review. Needs human help.`)
-          setIssueState(key, { notifiedMaxRetries: true })
-        }
-        continue
-      }
-      actionableCrPrs.push(pr)
+    // --- 2. Filter ONLY by isRepoAllowed (hard config filter) ---
+    const allOpenIssues = []
+    for (const issue of allDbIssues) {
+      if (await isRepoAllowed(issue.repo)) allOpenIssues.push(issue)
+    }
+    const allOpenPrs = []
+    for (const pr of allDbPrs) {
+      if (await isRepoAllowed(pr.repo)) allOpenPrs.push(pr)
     }
 
-    const actionableConflicts = []
-    for (const pr of conflictPrs) {
-      if (!(await isRepoAllowed(pr.repo))) continue
-      const key = `conflict:${pr.repo}#${pr.number}`
-      const state = getIssueState(key)
-      if (state?.status === 'done' || state?.status === 'in_progress') continue
-      const { pc } = await getProjectConfig(pr.repo, config)
-      const max = pc?.maxAttempts ?? MAX_CONFLICT_ATTEMPTS
-      if ((state?.attempts || 0) >= max) {
-        if (!state?.notifiedMaxRetries) {
-          notify(`⚠️ **${key}** — Could not resolve merge conflicts after ${max} attempts. Needs human help.`)
-          setIssueState(key, { notifiedMaxRetries: true })
-        }
-        continue
-      }
-      actionableConflicts.push(pr)
-    }
-
-    const actionableIssues = []
-    for (const issue of dbIssues) {
-      if (!(await isRepoAllowed(issue.repo))) continue
-      const key = `${issue.repo}#${issue.number}`
-      const state = getIssueState(key)
-      if (state?.status === 'done' || state?.status === 'in_progress') continue
-      const { pc } = await getProjectConfig(issue.repo, config)
-      const max = (pc?.maxAttempts ?? MAX_ISSUE_ATTEMPTS) + MAX_CI_FIX_ATTEMPTS
-      if ((state?.attempts || 0) >= max) {
-        if (!state?.notifiedMaxRetries) {
-          notify(`⚠️ **${key}** — Gave up after ${max} attempts (incl. CI fixes). Needs human help.`)
-          setIssueState(key, { notifiedMaxRetries: true })
-        }
-        continue
-      }
-      actionableIssues.push(issue)
-    }
-
-    const MAX_MERGE_ATTEMPTS = 2
-    const actionableMerge = config.features.autoMerge ? await getMergeReadyPrs(username) : []
-    const filteredMerge = []
-    for (const pr of actionableMerge) {
-      if (!(await isRepoAllowed(pr.repo))) continue
-      const key = `merge:${pr.repo}#${pr.number}`
-      const state = getIssueState(key)
-      if (state?.status === 'done' || state?.status === 'in_progress') continue
-      const { pc: mergePc } = await getProjectConfig(pr.repo, config)
-      const maxMergeAttempts = mergePc?.maxAttempts ?? MAX_MERGE_ATTEMPTS
-      if ((state?.attempts || 0) >= maxMergeAttempts) {
-        if (!state?.notifiedMaxRetries) {
-          notify(`⚠️ **${key}** — Auto-merge failed after ${maxMergeAttempts} attempts. Needs human help.`)
-          setIssueState(key, { notifiedMaxRetries: true })
-        }
-        continue
-      }
-      filteredMerge.push(pr)
-    }
-
-    // --- Ask Claude what to do ---
-    const plate = buildPlate(actionableIssues, actionableCrPrs, actionableConflicts, filteredMerge)
+    // --- 3. Build plate and dispatch ---
+    const plate = buildUnifiedPlate(allOpenIssues, allOpenPrs)
 
     if (plate.items.length === 0) {
+      console.log('[dispatch] No actionable work')
       lastDispatchTime = Date.now()
       dispatchStatus = 'idle'
       logActivity('dispatch', 'No actionable work found')
@@ -540,21 +639,21 @@ async function dispatch() {
       return
     }
 
-    // --- Execute the decision ---
+    // --- 4. Execute the decision ---
     // Track whether a handler took ownership of the worker slot
     // (handlePrReview, handleIssue, handleConflict all release the slot internally)
     let handlerOwnsSlot = false
 
     try {
       if (decision.action === 'handle_pr_review') {
-        const pr = actionableCrPrs.find(p => p.repo === decision.repo && p.number === decision.number)
+        const pr = allOpenPrs.find(p => p.repo === decision.repo && p.number === decision.number)
         if (!pr) return
         const key = `pr:${pr.repo}#${pr.number}`
         const state = getIssueState(key)
         const { pc } = await getProjectConfig(pr.repo, config)
         const attempt = (state?.attempts || 0) + 1
         const isRetry = attempt > 1
-        const maxAttempts = pc?.maxAttempts ?? MAX_PR_ATTEMPTS
+        const maxAttempts = pc?.maxAttempts ?? DEFAULT_MAX_PR_ATTEMPTS
 
         logActivity('dispatch', `Picked: ${key} (intelligent: ${decision.reasoning})`)
         notify(isRetry
@@ -571,7 +670,7 @@ async function dispatch() {
         }, config, state, pc ?? undefined)
 
       } else if (decision.action === 'handle_conflict') {
-        const pr = actionableConflicts.find(p => p.repo === decision.repo && p.number === decision.number)
+        const pr = allOpenPrs.find(p => p.repo === decision.repo && p.number === decision.number)
         if (!pr) return
         const key = `conflict:${pr.repo}#${pr.number}`
         const state = getIssueState(key)
@@ -596,14 +695,14 @@ async function dispatch() {
           .finally(() => releaseWorkerSlot())
 
       } else if (decision.action === 'handle_issue') {
-        const issue = actionableIssues.find(i => i.repo === decision.repo && i.number === decision.number)
+        const issue = allOpenIssues.find(i => i.repo === decision.repo && i.number === decision.number)
         if (!issue) return
         const key = `${issue.repo}#${issue.number}`
         const state = getIssueState(key)
         const { pc } = await getProjectConfig(issue.repo, config)
         const attempt = (state?.attempts || 0) + 1
         const isRetry = attempt > 1
-        const maxAttempts = (pc?.maxAttempts ?? MAX_ISSUE_ATTEMPTS) + MAX_CI_FIX_ATTEMPTS
+        const maxAttempts = (pc?.maxAttempts ?? DEFAULT_MAX_ISSUE_ATTEMPTS) + DEFAULT_MAX_CI_FIX_ATTEMPTS
 
         const labels = Array.isArray(issue.labels) ? (issue.labels as string[]) : []
         const score = scoreIssue({ labels, createdAt: issue.createdAt?.toISOString() }, state)
@@ -622,36 +721,72 @@ async function dispatch() {
         }, config, attempt, pc ?? undefined)
 
       } else if (decision.action === 'auto_merge') {
-        const pr = filteredMerge.find(p => p.repo === decision.repo && p.number === decision.number)
+        const pr = allOpenPrs.find(p => p.repo === decision.repo && p.number === decision.number)
         if (!pr) return
         const key = `merge:${pr.repo}#${pr.number}`
         const state = getIssueState(key)
         const attempt = (state?.attempts || 0) + 1
 
-        console.log(`[dispatch] Auto-merging: ${pr.repo}#${pr.number} — ${pr.title} (attempt ${attempt})`)
-        logActivity('dispatch', `Auto-merging: ${pr.repo}#${pr.number} (intelligent: ${decision.reasoning})`)
-        notify(`🚀 Auto-merging **${pr.repo}#${pr.number}** — ${pr.title}`)
-
+        // Revalidate PR state against live GitHub data before merging
+        let canMerge = true
         try {
-          const { stdout: mergeOutput } = await execFileAsync('gh', [
-            'pr', 'merge', String(pr.number),
+          const { stdout: liveRaw } = await execFileAsync('gh', [
+            'pr', 'view', String(pr.number),
             '--repo', pr.repo,
-            '--squash',
-            '--delete-branch',
+            '--json', 'state,mergeable,reviewDecision,statusCheckRollup',
           ], {
             encoding: 'utf-8',
-            timeout: 30_000,
+            timeout: 15_000,
             env: { ...process.env, GH_PAGER: '' },
           })
-          if (mergeOutput.trim()) console.log(`[dispatch] Merge output: ${mergeOutput.trim()}`)
-          setIssueState(key, { status: 'done', attempts: attempt, repo: pr.repo, number: pr.number, type: 'merge' })
-          notify(`✅ Merged **${pr.repo}#${pr.number}** — ${pr.title}`)
-          logActivity('dispatch', `Merged: ${pr.repo}#${pr.number}`)
-        } catch (mergeErr: any) {
-          const errMsg = mergeErr?.stderr || mergeErr?.message || 'gh pr merge failed'
-          console.error(`[dispatch] Auto-merge failed for ${pr.repo}#${pr.number}: ${errMsg}`)
-          setIssueState(key, { status: 'failed', attempts: attempt, repo: pr.repo, number: pr.number, type: 'merge', error: errMsg })
-          notify(`❌ Auto-merge failed for **${pr.repo}#${pr.number}**`)
+          const livePr = JSON.parse(liveRaw.trim())
+          const liveCi = deriveCiStatus(livePr.statusCheckRollup || null)
+          if (livePr.state !== 'OPEN') {
+            console.log(`[dispatch] Auto-merge skipped: ${pr.repo}#${pr.number} is no longer OPEN (${livePr.state})`)
+            canMerge = false
+          } else if (livePr.reviewDecision !== 'APPROVED') {
+            console.log(`[dispatch] Auto-merge skipped: ${pr.repo}#${pr.number} review is ${livePr.reviewDecision}`)
+            canMerge = false
+          } else if (liveCi !== 'passing') {
+            console.log(`[dispatch] Auto-merge skipped: ${pr.repo}#${pr.number} CI is ${liveCi}`)
+            canMerge = false
+          } else if (livePr.mergeable !== 'MERGEABLE') {
+            console.log(`[dispatch] Auto-merge skipped: ${pr.repo}#${pr.number} mergeable is ${livePr.mergeable}`)
+            canMerge = false
+          }
+        } catch (revalErr: any) {
+          console.warn(`[dispatch] Auto-merge revalidation failed for ${pr.repo}#${pr.number}: ${revalErr.message} — skipping merge`)
+          canMerge = false
+        }
+
+        if (!canMerge) {
+          logActivity('dispatch', `Auto-merge skipped (revalidation failed): ${pr.repo}#${pr.number}`)
+        } else {
+          console.log(`[dispatch] Auto-merging: ${pr.repo}#${pr.number} — ${pr.title} (attempt ${attempt})`)
+          logActivity('dispatch', `Auto-merging: ${pr.repo}#${pr.number} (intelligent: ${decision.reasoning})`)
+          notify(`🚀 Auto-merging **${pr.repo}#${pr.number}** — ${pr.title}`)
+
+          try {
+            const { stdout: mergeOutput } = await execFileAsync('gh', [
+              'pr', 'merge', String(pr.number),
+              '--repo', pr.repo,
+              '--squash',
+              '--delete-branch',
+            ], {
+              encoding: 'utf-8',
+              timeout: 30_000,
+              env: { ...process.env, GH_PAGER: '' },
+            })
+            if (mergeOutput.trim()) console.log(`[dispatch] Merge output: ${mergeOutput.trim()}`)
+            setIssueState(key, { status: 'done', attempts: attempt, repo: pr.repo, number: pr.number, type: 'merge' })
+            notify(`✅ Merged **${pr.repo}#${pr.number}** — ${pr.title}`)
+            logActivity('dispatch', `Merged: ${pr.repo}#${pr.number}`)
+          } catch (mergeErr: any) {
+            const errMsg = mergeErr?.stderr || mergeErr?.message || 'gh pr merge failed'
+            console.error(`[dispatch] Auto-merge failed for ${pr.repo}#${pr.number}: ${errMsg}`)
+            setIssueState(key, { status: 'failed', attempts: attempt, repo: pr.repo, number: pr.number, type: 'merge', error: errMsg })
+            notify(`❌ Auto-merge failed for **${pr.repo}#${pr.number}**`)
+          }
         }
       }
     } finally {
@@ -674,69 +809,6 @@ async function dispatch() {
 }
 
 // ---------------------------------------------------------------------------
-// hasPendingWork — returns true if dispatch would find actionable work
-// ---------------------------------------------------------------------------
-export async function hasPendingWork(): Promise<boolean> {
-  const config = loadConfig()
-  const username = config.github.username
-
-  const changesRequestedPrs = await getPrsWithChangesRequested(username)
-  for (const pr of changesRequestedPrs) {
-    if (!(await isRepoAllowed(pr.repo))) continue
-    const key = `pr:${pr.repo}#${pr.number}`
-    const state = getIssueState(key)
-    if (state?.status === 'done') {
-      const latestReviewAt = pr.latestReviewAt?.toISOString() || null
-      if (latestReviewAt && (!state.lastReviewAt || latestReviewAt > state.lastReviewAt)) return true
-      continue
-    }
-    if (state?.status === 'in_progress') continue
-    if ((state?.attempts || 0) >= MAX_PR_ATTEMPTS) continue
-    return true
-  }
-
-  const conflictPrs = await getConflictingPrs(username)
-  for (const pr of conflictPrs) {
-    if (!(await isRepoAllowed(pr.repo))) continue
-    const key = `conflict:${pr.repo}#${pr.number}`
-    const state = getIssueState(key)
-    if (state?.status === 'done' || state?.status === 'in_progress') continue
-    if ((state?.attempts || 0) >= MAX_CONFLICT_ATTEMPTS) continue
-    return true
-  }
-
-  const maxIssueAttempts = MAX_ISSUE_ATTEMPTS + MAX_CI_FIX_ATTEMPTS
-  const dbIssues = await getOpenIssues(username)
-  for (const i of dbIssues) {
-    if (!(await isRepoAllowed(i.repo))) continue
-    const key = `${i.repo}#${i.number}`
-    const state = getIssueState(key)
-    if (state?.status === 'done') {
-      const failingPrs = await getFailingPrsForIssue(username, i.repo, i.number)
-      if (failingPrs.length > 0 && (state.attempts || 0) < maxIssueAttempts) return true
-      continue
-    }
-    if (state?.status === 'in_progress') continue
-    if ((state?.attempts || 0) >= maxIssueAttempts) continue
-    return true
-  }
-
-  // Check for auto-merge candidates
-  if (config.features.autoMerge) {
-    const mergeReadyPrs = await getMergeReadyPrs(username)
-    for (const pr of mergeReadyPrs) {
-      if (!(await isRepoAllowed(pr.repo))) continue
-      const key = `merge:${pr.repo}#${pr.number}`
-      const state = getIssueState(key)
-      if (state?.status === 'done') continue
-      return true
-    }
-  }
-
-  return false
-}
-
-// ---------------------------------------------------------------------------
 // DB query helpers (Prisma — used by dispatch and routes)
 // ---------------------------------------------------------------------------
 
@@ -754,46 +826,6 @@ export async function getPrsByRepos(username: string, repos: string[]) {
   return prisma.githubPr.findMany({
     where: { author: username, repo: { in: repos } },
     orderBy: { number: 'asc' },
-  })
-}
-
-/** Get open PRs with merge conflicts */
-export async function getConflictingPrs(username: string) {
-  return prisma.githubPr.findMany({
-    where: { author: username, state: 'OPEN', mergeable: 'CONFLICTING' },
-  })
-}
-
-/** Get open PRs with CI failures linked to a specific issue */
-export async function getFailingPrsForIssue(username: string, repo: string, issueNumber: number) {
-  return prisma.githubPr.findMany({
-    where: {
-      author: username,
-      repo,
-      state: 'OPEN',
-      ciStatus: 'failing',
-      linkedIssueNumbers: { has: issueNumber },
-    },
-  })
-}
-
-/** Get open PRs with changes_requested reviews */
-export async function getPrsWithChangesRequested(username: string) {
-  return prisma.githubPr.findMany({
-    where: { author: username, state: 'OPEN', reviewDecision: 'CHANGES_REQUESTED' },
-  })
-}
-
-/** Get open PRs that are ready to merge (CI passing, mergeable, approved) */
-export async function getMergeReadyPrs(username: string) {
-  return prisma.githubPr.findMany({
-    where: {
-      author: username,
-      state: 'OPEN',
-      ciStatus: 'passing',
-      mergeable: 'MERGEABLE',
-      reviewDecision: 'APPROVED',
-    },
   })
 }
 

@@ -1,54 +1,52 @@
 import { createHash } from 'crypto'
-import { loadConfig } from './config.js'
 import { isWorkerSlotFree } from './worker-lock.js'
-import { getOpenIssues, getPrsWithChangesRequested, getConflictingPrs, getMergeReadyPrs } from './github-sync.js'
+import { isRepoAllowed } from './allowed-repos.js'
+import { prisma } from '../prisma.js'
 
 interface StateSnapshot {
   hash: string
   timestamp: number
   issueCount: number
-  changesRequestedCount: number
-  conflictCount: number
-  mergeReadyCount: number
+  prCount: number
   workerFree: boolean
 }
 
 let previousSnapshot: StateSnapshot | null = null
 
 export async function hasStateChanged(): Promise<{ changed: boolean; reason: string; snapshot: StateSnapshot }> {
-  const config = loadConfig()
-  const username = config.github.username
+  // Query ALL open issues, then filter by isRepoAllowed (same filter as dispatch)
+  const allIssues = await prisma.githubIssue.findMany({
+    where: { state: 'OPEN' },
+    select: { repo: true, number: true, updatedAt: true },
+    orderBy: { number: 'asc' },
+  })
+  const issues = []
+  for (const i of allIssues) {
+    if (await isRepoAllowed(i.repo)) issues.push(i)
+  }
 
-  // Query current state
-  const issues = await getOpenIssues(username)
-  const changesRequested = await getPrsWithChangesRequested(username)
-  const conflicts = await getConflictingPrs(username)
-  const mergeReady = await getMergeReadyPrs(username)
+  // Query ALL open PRs, then filter by isRepoAllowed (same filter as dispatch)
+  const allPrs = await prisma.githubPr.findMany({
+    where: { state: 'OPEN' },
+    select: { repo: true, number: true, updatedAt: true, reviewDecision: true, ciStatus: true, mergeable: true, latestReviewAt: true },
+    orderBy: { number: 'asc' },
+  })
+  const prs = []
+  for (const pr of allPrs) {
+    if (await isRepoAllowed(pr.repo)) prs.push(pr)
+  }
+
   const workerFree = isWorkerSlotFree()
 
   // Build fingerprint from meaningful fields
   const parts: string[] = []
 
-  // Issue fingerprint: repo#number + labels (sorted for stability)
   for (const i of issues) {
-    const raw = Array.isArray(i.labels) ? (i.labels as string[]) : []
-    const labels = raw.sort().join(',')
-    parts.push(`issue:${i.repo}#${i.number}:${labels}`)
+    parts.push(`issue:${i.repo}#${i.number}:${i.updatedAt?.toISOString() || ''}`)
   }
 
-  // PR review fingerprint
-  for (const pr of changesRequested) {
-    parts.push(`cr:${pr.repo}#${pr.number}:${pr.latestReviewAt?.toISOString() || ''}`)
-  }
-
-  // Conflict fingerprint
-  for (const pr of conflicts) {
-    parts.push(`conflict:${pr.repo}#${pr.number}`)
-  }
-
-  // Merge ready fingerprint
-  for (const pr of mergeReady) {
-    parts.push(`merge:${pr.repo}#${pr.number}`)
+  for (const pr of prs) {
+    parts.push(`pr:${pr.repo}#${pr.number}:${pr.updatedAt?.toISOString() || ''}:${pr.reviewDecision}:${pr.ciStatus}:${pr.mergeable}:${pr.latestReviewAt?.toISOString() || ''}`)
   }
 
   parts.push(`worker:${workerFree}`)
@@ -59,9 +57,7 @@ export async function hasStateChanged(): Promise<{ changed: boolean; reason: str
     hash,
     timestamp: Date.now(),
     issueCount: issues.length,
-    changesRequestedCount: changesRequested.length,
-    conflictCount: conflicts.length,
-    mergeReadyCount: mergeReady.length,
+    prCount: prs.length,
     workerFree,
   }
 
@@ -81,20 +77,14 @@ export async function hasStateChanged(): Promise<{ changed: boolean; reason: str
   if (snapshot.issueCount !== previousSnapshot.issueCount) {
     reasons.push(`issues: ${previousSnapshot.issueCount} → ${snapshot.issueCount}`)
   }
-  if (snapshot.changesRequestedCount !== previousSnapshot.changesRequestedCount) {
-    reasons.push(`changes_requested: ${previousSnapshot.changesRequestedCount} → ${snapshot.changesRequestedCount}`)
-  }
-  if (snapshot.conflictCount !== previousSnapshot.conflictCount) {
-    reasons.push(`conflicts: ${previousSnapshot.conflictCount} → ${snapshot.conflictCount}`)
-  }
-  if (snapshot.mergeReadyCount !== previousSnapshot.mergeReadyCount) {
-    reasons.push(`merge_ready: ${previousSnapshot.mergeReadyCount} → ${snapshot.mergeReadyCount}`)
+  if (snapshot.prCount !== previousSnapshot.prCount) {
+    reasons.push(`prs: ${previousSnapshot.prCount} → ${snapshot.prCount}`)
   }
   if (snapshot.workerFree !== previousSnapshot.workerFree) {
     reasons.push(`worker: ${previousSnapshot.workerFree ? 'free' : 'busy'} → ${snapshot.workerFree ? 'free' : 'busy'}`)
   }
   if (reasons.length === 0) {
-    reasons.push('item details changed (labels, reviews, CI)')
+    reasons.push('item details changed (updatedAt, reviews, CI, mergeable)')
   }
 
   previousSnapshot = snapshot
