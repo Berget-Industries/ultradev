@@ -35,7 +35,7 @@ After every push that addresses review feedback:
 ### Changesets (REQUIRED)
 
 - Always include a changeset file when making changes.
-- Create `.changeset/<branch-name>.md` with the package name and semver bump.
+- Create `.changeset/<adjective>-<noun>.md` (e.g., `brave-pandas.md`) with the package name and semver bump, matching the `@changesets/cli` naming convention.
 - Use `patch` for bug fixes, `minor` for features, `major` for breaking changes.
 - Skip only if the repo has no `.changeset/config.json`.
 
