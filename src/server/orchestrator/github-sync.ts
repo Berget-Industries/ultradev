@@ -3,8 +3,11 @@
  * Single service: sync -> dispatch -> work
  * Fetches issues + PRs from GitHub, stores in PostgreSQL via Prisma, then dispatches work.
  */
-import { execFileSync } from 'child_process'
+import { execFile, execFileSync } from 'child_process'
+import { promisify } from 'util'
 import { existsSync } from 'fs'
+
+const execFileAsync = promisify(execFile)
 import { loadConfig, type Config } from './config.js'
 import { MAINTENANCE_FILE } from '../paths.js'
 import { logActivity } from './activity-log.js'
@@ -18,9 +21,11 @@ import { scoreIssue, formatScore } from './prioritize.js'
 import { handleIssue } from './github-poller.js'
 import { handlePrReview, cleanStalePrStates } from './pr-poller.js'
 import { handleConflict } from './conflict-poller.js'
+import { hasStateChanged, resetSnapshot } from './state-diff.js'
+import { buildPlate, intelligentDispatch } from './intelligent-dispatch.js'
 import { prisma } from '../prisma.js'
 import { resolveProjectConfig, type ProjectConfig } from '../lib/project-config.js'
-import type { GithubIssue, GithubPr, Project } from '@prisma/client'
+import type { Project } from '@prisma/client'
 
 let intervalId: ReturnType<typeof setInterval> | null = null
 let lastSyncTime: number | null = null
@@ -311,6 +316,18 @@ export async function syncGitHub() {
     console.log(`[github-sync] Synced ${issueCount} issues, ${prCount} PRs across ${repos.length} repo(s)`)
     logActivity('github-sync', `Synced ${issueCount} issues, ${prCount} PRs`)
 
+    // Always run stuck-job recovery regardless of state changes
+    await recoverStuckJobs()
+
+    // Check if anything meaningful changed before dispatching
+    const diff = await hasStateChanged()
+    if (!diff.changed) {
+      console.log(`[github-sync] No state changes — skipping dispatch`)
+      return
+    }
+    console.log(`[github-sync] State changed: ${diff.reason}`)
+    logActivity('github-sync', `State changed: ${diff.reason}`)
+
     await dispatch()
   } catch (err: any) {
     console.error('[github-sync] Error:', err.message)
@@ -340,6 +357,64 @@ async function getProjectConfig(repo: string, config: Config): Promise<{ project
   return { project, pc: resolveProjectConfig(project, config) }
 }
 
+/** Recover stuck jobs and reset stale states — runs every sync cycle regardless of state changes */
+async function recoverStuckJobs() {
+  const config = loadConfig()
+  const username = config.github.username
+  const STUCK_TIMEOUT = 20 * 60 * 1000
+
+  await cleanStalePrStates()
+
+  const changesRequestedPrs = await getPrsWithChangesRequested(username)
+  for (const pr of changesRequestedPrs) {
+    const key = `pr:${pr.repo}#${pr.number}`
+    const state = getIssueState(key)
+
+    if (state?.status === 'done') {
+      const latestReviewAt = pr.latestReviewAt?.toISOString() || null
+      if (latestReviewAt && (!state.lastReviewAt || latestReviewAt > state.lastReviewAt)) {
+        console.log(`[recovery] ${key} has new review feedback (${latestReviewAt}) — resetting`)
+        setIssueState(key, { status: 'pending', attempts: 0, notifiedMaxRetries: false })
+      }
+    }
+    if (state?.status === 'in_progress' && Date.now() - (state.updatedAt || 0) > STUCK_TIMEOUT) {
+      setIssueState(key, { status: 'failed', error: 'Timed out (stuck)' })
+    }
+  }
+
+  const conflictPrs = await getConflictingPrs(username)
+  for (const pr of conflictPrs) {
+    const key = `conflict:${pr.repo}#${pr.number}`
+    const state = getIssueState(key)
+    if (state?.status === 'in_progress' && Date.now() - (state.updatedAt || 0) > STUCK_TIMEOUT) {
+      setIssueState(key, { status: 'failed', error: 'Timed out (stuck)' })
+    }
+  }
+
+  const dbIssues = await getOpenIssues(username)
+  for (const issue of dbIssues) {
+    const key = `${issue.repo}#${issue.number}`
+    const state = getIssueState(key)
+
+    if (state?.status === 'done') {
+      const { pc } = await getProjectConfig(issue.repo, config)
+      const maxAttempts = (pc?.maxAttempts ?? MAX_ISSUE_ATTEMPTS) + MAX_CI_FIX_ATTEMPTS
+      const failingPrs = await getFailingPrsForIssue(username, issue.repo, issue.number)
+      if (failingPrs.length > 0 && (state.attempts || 0) < maxAttempts) {
+        const prNums = failingPrs.map(p => `#${p.number}`).join(', ')
+        console.log(`[recovery] ${key} marked done but PR ${prNums} has CI failures — re-queuing`)
+        logActivity('recovery', `Re-queuing ${key}: linked PR CI failing`)
+        setIssueState(key, { status: 'failed', error: `CI still failing on ${prNums}`, notifiedMaxRetries: false })
+        notify(`🔧 **${key}** — CI still failing on ${prNums}, re-queuing to fix`)
+      }
+    }
+    if (state?.status === 'in_progress' && Date.now() - (state.updatedAt || 0) > STUCK_TIMEOUT) {
+      console.log(`[recovery] ${key} appears stuck, marking for retry`)
+      setIssueState(key, { status: 'failed', error: 'Timed out (stuck)' })
+    }
+  }
+}
+
 async function dispatch() {
   if (existsSync(MAINTENANCE_FILE)) {
     console.log('[dispatch] Maintenance mode — skipping')
@@ -359,257 +434,237 @@ async function dispatch() {
   dispatchStatus = 'dispatching'
 
   try {
-    await cleanStalePrStates()
-
-    // --- Priority 1: PR reviews (changes_requested) ---
+    // --- Query current state from DB ---
     const changesRequestedPrs = await getPrsWithChangesRequested(username)
+    const conflictPrs = await getConflictingPrs(username)
+    const dbIssues = await getOpenIssues(username)
+
+    // --- Filter to actionable items only (allowed repos, under max attempts, not done/in_progress) ---
+    const actionableCrPrs = []
     for (const pr of changesRequestedPrs) {
       if (!(await isRepoAllowed(pr.repo))) continue
-
-      const { pc: prPc } = await getProjectConfig(pr.repo, config)
-      const maxPrAttempts = prPc?.maxAttempts ?? MAX_PR_ATTEMPTS
-
       const key = `pr:${pr.repo}#${pr.number}`
-      let state = getIssueState(key)
-
-      if (state?.status === 'done') {
-        const latestReviewAt = pr.latestReviewAt?.toISOString() || null
-        if (!latestReviewAt || (state.lastReviewAt && latestReviewAt <= state.lastReviewAt)) {
-          continue
-        }
-        console.log(`[dispatch] ${key} has new review feedback (${latestReviewAt}) — resetting`)
-        setIssueState(key, { status: 'pending', attempts: 0, notifiedMaxRetries: false })
-        state = getIssueState(key)
-      }
-      if (state?.status === 'in_progress') {
-        if (Date.now() - (state.updatedAt || 0) > 20 * 60 * 1000) {
-          setIssueState(key, { status: 'failed', error: 'Timed out (stuck)' })
-        }
-        continue
-      }
-      if ((state?.attempts || 0) >= maxPrAttempts) {
+      const state = getIssueState(key)
+      if (state?.status === 'done' || state?.status === 'in_progress') continue
+      const { pc } = await getProjectConfig(pr.repo, config)
+      const max = pc?.maxAttempts ?? MAX_PR_ATTEMPTS
+      if ((state?.attempts || 0) >= max) {
         if (!state?.notifiedMaxRetries) {
-          notify(`⚠️ **${key}** — Gave up after ${maxPrAttempts} attempts on PR review. Needs human help.`)
+          notify(`⚠️ **${key}** — Gave up after ${max} attempts on PR review. Needs human help.`)
           setIssueState(key, { notifiedMaxRetries: true })
         }
         continue
       }
-
-      if (!claimWorkerSlot()) break
-
-      const attempt = (state?.attempts || 0) + 1
-      const isRetry = attempt > 1
-      const prSummary = {
-        number: pr.number,
-        title: pr.title,
-        url: `https://github.com/${pr.repo}/pull/${pr.number}`,
-        latest_review_at: pr.latestReviewAt?.toISOString() || null,
-      }
-
-      console.log(`[dispatch] Picked: ${key} (reason: changes_requested, priority: highest)`)
-      logActivity('dispatch', `Picked: ${key} (changes_requested)`)
-      notify(isRetry
-        ? `🔄 Retrying PR fix **${pr.repo}#${pr.number}** (attempt ${attempt}/${maxPrAttempts})...`
-        : `🔍 Picked up changes requested: **${pr.repo}#${pr.number}** — ${pr.title}`
-      )
-
-      handlePrReview(pr.repo, prSummary, config, state, prPc ?? undefined)
-      lastDispatchTime = Date.now()
-      dispatchStatus = 'idle'
-      return
+      actionableCrPrs.push(pr)
     }
 
-    // --- Priority 2: Merge conflicts ---
-    const conflictPrs = await getConflictingPrs(username)
+    const actionableConflicts = []
     for (const pr of conflictPrs) {
       if (!(await isRepoAllowed(pr.repo))) continue
-
-      const { pc: conflictPc } = await getProjectConfig(pr.repo, config)
-      const maxConflictAttempts = conflictPc?.maxAttempts ?? MAX_CONFLICT_ATTEMPTS
-
       const key = `conflict:${pr.repo}#${pr.number}`
       const state = getIssueState(key)
-
-      if (state?.status === 'done') continue
-      if (state?.status === 'in_progress') {
-        if (Date.now() - (state.updatedAt || 0) > 20 * 60 * 1000) {
-          setIssueState(key, { status: 'failed', error: 'Timed out (stuck)' })
-        }
-        continue
-      }
-      if ((state?.attempts || 0) >= maxConflictAttempts) {
+      if (state?.status === 'done' || state?.status === 'in_progress') continue
+      const { pc } = await getProjectConfig(pr.repo, config)
+      const max = pc?.maxAttempts ?? MAX_CONFLICT_ATTEMPTS
+      if ((state?.attempts || 0) >= max) {
         if (!state?.notifiedMaxRetries) {
-          notify(`⚠️ **${key}** — Could not resolve merge conflicts after ${maxConflictAttempts} attempts. Needs human help.`)
+          notify(`⚠️ **${key}** — Could not resolve merge conflicts after ${max} attempts. Needs human help.`)
           setIssueState(key, { notifiedMaxRetries: true })
         }
         continue
       }
-
-      if (!claimWorkerSlot()) break
-
-      const attempt = (state?.attempts || 0) + 1
-      console.log(`[dispatch] Picked: ${key} (reason: merge_conflict, priority: high)`)
-      logActivity('dispatch', `Picked: ${key} (merge_conflict)`)
-      notify(`🔀 Resolving merge conflicts on **${pr.repo}#${pr.number}** — ${pr.title}`)
-
-      const logFile = makeLogPath(config, key)
-      setIssueState(key, {
-        status: 'in_progress',
-        attempts: attempt,
-        repo: pr.repo,
-        number: pr.number,
-        type: 'conflict',
-        logFile,
-      })
-
-      handleConflict(pr, config, logFile, attempt, conflictPc ?? undefined)
-        .finally(() => releaseWorkerSlot())
-      lastDispatchTime = Date.now()
-      dispatchStatus = 'idle'
-      return
+      actionableConflicts.push(pr)
     }
 
-    // --- Priority 3: New issues (scored by prioritize.ts) ---
-    const dbIssues = await getOpenIssues(username)
-    const issues = dbIssues.map(i => ({
-      repository: { nameWithOwner: i.repo },
-      number: i.number,
-      title: i.title,
-      labels: i.labels as string[],
-      createdAt: i.createdAt?.toISOString(),
-    }))
-
-    const scored = issues.map(issue => {
-      const repo = issue.repository.nameWithOwner
-      const key = `${repo}#${issue.number}`
+    const actionableIssues = []
+    for (const issue of dbIssues) {
+      if (!(await isRepoAllowed(issue.repo))) continue
+      const key = `${issue.repo}#${issue.number}`
       const state = getIssueState(key)
-      return { issue, key, state, score: scoreIssue(issue, state) }
-    }).sort((a, b) => b.score.total - a.score.total)
-
-    for (let { issue, key, state, score } of scored) {
-      const repo = issue.repository.nameWithOwner
-      if (!(await isRepoAllowed(repo))) continue
-
-      const { pc: issuePc } = await getProjectConfig(repo, config)
-      const baseMaxAttempts = issuePc?.maxAttempts ?? MAX_ISSUE_ATTEMPTS
-      const maxAttempts = baseMaxAttempts + MAX_CI_FIX_ATTEMPTS
-
-      if (state?.status === 'done') {
-        const failingPrs = await getFailingPrsForIssue(username, repo, issue.number)
-        if (failingPrs.length > 0 && (state.attempts || 0) < maxAttempts) {
-          const prNums = failingPrs.map(p => `#${p.number}`).join(', ')
-          console.log(`[dispatch] ${key} marked done but PR ${prNums} has CI failures — re-queuing`)
-          logActivity('dispatch', `Re-queuing ${key}: linked PR CI failing`)
-          setIssueState(key, {
-            status: 'failed',
-            error: `CI still failing on ${prNums}`,
-            notifiedMaxRetries: false,
-          })
-          notify(`🔧 **${key}** — CI still failing on ${prNums}, re-queuing to fix`)
-          state = getIssueState(key)
-        } else {
-          continue
-        }
-      }
-      if (state?.status === 'in_progress') {
-        if (Date.now() - (state?.updatedAt || 0) > 20 * 60 * 1000) {
-          console.log(`[dispatch] ${key} appears stuck, marking for retry`)
-          setIssueState(key, { status: 'failed', error: 'Timed out (stuck)' })
-        }
-        continue
-      }
-      if ((state?.attempts || 0) >= maxAttempts) {
+      if (state?.status === 'done' || state?.status === 'in_progress') continue
+      const { pc } = await getProjectConfig(issue.repo, config)
+      const max = (pc?.maxAttempts ?? MAX_ISSUE_ATTEMPTS) + MAX_CI_FIX_ATTEMPTS
+      if ((state?.attempts || 0) >= max) {
         if (!state?.notifiedMaxRetries) {
-          notify(`⚠️ **${key}** — Gave up after ${maxAttempts} attempts (incl. CI fixes). Needs human help.`)
+          notify(`⚠️ **${key}** — Gave up after ${max} attempts (incl. CI fixes). Needs human help.`)
           setIssueState(key, { notifiedMaxRetries: true })
         }
         continue
       }
+      actionableIssues.push(issue)
+    }
 
-      if (!claimWorkerSlot()) break
+    const MAX_MERGE_ATTEMPTS = 2
+    const actionableMerge = config.features.autoMerge ? await getMergeReadyPrs(username) : []
+    const filteredMerge = []
+    for (const pr of actionableMerge) {
+      if (!(await isRepoAllowed(pr.repo))) continue
+      const key = `merge:${pr.repo}#${pr.number}`
+      const state = getIssueState(key)
+      if (state?.status === 'done' || state?.status === 'in_progress') continue
+      const { pc: mergePc } = await getProjectConfig(pr.repo, config)
+      const maxMergeAttempts = mergePc?.maxAttempts ?? MAX_MERGE_ATTEMPTS
+      if ((state?.attempts || 0) >= maxMergeAttempts) {
+        if (!state?.notifiedMaxRetries) {
+          notify(`⚠️ **${key}** — Auto-merge failed after ${maxMergeAttempts} attempts. Needs human help.`)
+          setIssueState(key, { notifiedMaxRetries: true })
+        }
+        continue
+      }
+      filteredMerge.push(pr)
+    }
 
-      const attempt = (state?.attempts || 0) + 1
-      const isRetry = attempt > 1
+    // --- Ask Claude what to do ---
+    const plate = buildPlate(actionableIssues, actionableCrPrs, actionableConflicts, filteredMerge)
 
-      console.log(`[dispatch] Picked: ${key} (reason: issue, priority: ${score.total})`)
-      console.log(`[dispatch] Score: ${formatScore(key, score)}`)
-      logActivity('dispatch', `Picked: ${key} (issue, score: ${score.total})`)
-      notify(isRetry
-        ? `🔄 Retrying **${key}** (attempt ${attempt}/${maxAttempts})...`
-        : `🔍 Picked up: **${key}** — ${issue.title}`
-      )
+    if (plate.items.length === 0) {
+      lastDispatchTime = Date.now()
+      dispatchStatus = 'idle'
+      logActivity('dispatch', 'No actionable work found')
+      return
+    }
 
-      handleIssue(issue, config, attempt, issuePc ?? undefined)
+    const decision = await intelligentDispatch(plate, config)
+    console.log(`[dispatch] 🧠 Claude decided: ${decision.action} ${decision.repo}#${decision.number} — ${decision.reasoning}`)
+
+    if (decision.action === 'skip') {
+      lastDispatchTime = Date.now()
+      dispatchStatus = 'idle'
+      logActivity('dispatch', `Skipped: ${decision.reasoning}`)
+      return
+    }
+
+    if (!claimWorkerSlot()) {
       lastDispatchTime = Date.now()
       dispatchStatus = 'idle'
       return
     }
 
-    // --- Priority 4: Auto-merge (ready_to_merge PRs) ---
-    const MAX_MERGE_ATTEMPTS = 2
-    if (config.features.autoMerge) {
-      const mergeReadyPrs = await getMergeReadyPrs(username)
-      for (const pr of mergeReadyPrs) {
-        if (!(await isRepoAllowed(pr.repo))) continue
+    // --- Execute the decision ---
+    // Track whether a handler took ownership of the worker slot
+    // (handlePrReview, handleIssue, handleConflict all release the slot internally)
+    let handlerOwnsSlot = false
 
-        const key = `merge:${pr.repo}#${pr.number}`
+    try {
+      if (decision.action === 'handle_pr_review') {
+        const pr = actionableCrPrs.find(p => p.repo === decision.repo && p.number === decision.number)
+        if (!pr) return
+        const key = `pr:${pr.repo}#${pr.number}`
         const state = getIssueState(key)
-        if (state?.status === 'done') continue
-        if (state?.status === 'in_progress') continue
-        if ((state?.attempts || 0) >= MAX_MERGE_ATTEMPTS) {
-          if (!state?.notifiedMaxRetries) {
-            notify(`⚠️ **${key}** — Auto-merge failed after ${MAX_MERGE_ATTEMPTS} attempts. Needs human help.`)
-            setIssueState(key, { notifiedMaxRetries: true })
-          }
-          continue
-        }
-
+        const { pc } = await getProjectConfig(pr.repo, config)
         const attempt = (state?.attempts || 0) + 1
-        console.log(`[dispatch] Auto-merging: ${pr.repo}#${pr.number} — ${pr.title} (attempt ${attempt}/${MAX_MERGE_ATTEMPTS})`)
-        logActivity('dispatch', `Auto-merging: ${pr.repo}#${pr.number}`)
-        notify(`🚀 Auto-merging **${pr.repo}#${pr.number}** — ${pr.title}`)
+        const isRetry = attempt > 1
+        const maxAttempts = pc?.maxAttempts ?? MAX_PR_ATTEMPTS
 
-        // gh() returns '' on failure (catches errors internally, never throws)
-        const result = gh(
-          'pr', 'merge', String(pr.number),
-          '--repo', pr.repo,
-          '--squash',
-          '--delete-branch'
+        logActivity('dispatch', `Picked: ${key} (intelligent: ${decision.reasoning})`)
+        notify(isRetry
+          ? `🔄 Retrying PR fix **${pr.repo}#${pr.number}** (attempt ${attempt}/${maxAttempts})...`
+          : `🔍 Picked up changes requested: **${pr.repo}#${pr.number}** — ${pr.title}`
         )
 
-        if (result !== '') {
-          console.log(`[dispatch] Merge output: ${result}`)
-          setIssueState(key, {
-            status: 'done',
-            attempts: attempt,
-            repo: pr.repo,
-            number: pr.number,
-            type: 'merge',
+        handlerOwnsSlot = true
+        handlePrReview(pr.repo, {
+          number: pr.number,
+          title: pr.title,
+          url: `https://github.com/${pr.repo}/pull/${pr.number}`,
+          latest_review_at: pr.latestReviewAt?.toISOString() || null,
+        }, config, state, pc ?? undefined)
+
+      } else if (decision.action === 'handle_conflict') {
+        const pr = actionableConflicts.find(p => p.repo === decision.repo && p.number === decision.number)
+        if (!pr) return
+        const key = `conflict:${pr.repo}#${pr.number}`
+        const state = getIssueState(key)
+        const { pc } = await getProjectConfig(pr.repo, config)
+        const attempt = (state?.attempts || 0) + 1
+
+        logActivity('dispatch', `Picked: ${key} (intelligent: ${decision.reasoning})`)
+        notify(`🔀 Resolving merge conflicts on **${pr.repo}#${pr.number}** — ${pr.title}`)
+
+        const logFile = makeLogPath(config, key)
+        setIssueState(key, {
+          status: 'in_progress',
+          attempts: attempt,
+          repo: pr.repo,
+          number: pr.number,
+          type: 'conflict',
+          logFile,
+        })
+
+        handlerOwnsSlot = true
+        handleConflict(pr, config, logFile, attempt, pc ?? undefined)
+          .finally(() => releaseWorkerSlot())
+
+      } else if (decision.action === 'handle_issue') {
+        const issue = actionableIssues.find(i => i.repo === decision.repo && i.number === decision.number)
+        if (!issue) return
+        const key = `${issue.repo}#${issue.number}`
+        const state = getIssueState(key)
+        const { pc } = await getProjectConfig(issue.repo, config)
+        const attempt = (state?.attempts || 0) + 1
+        const isRetry = attempt > 1
+        const maxAttempts = (pc?.maxAttempts ?? MAX_ISSUE_ATTEMPTS) + MAX_CI_FIX_ATTEMPTS
+
+        const labels = Array.isArray(issue.labels) ? (issue.labels as string[]) : []
+        const score = scoreIssue({ labels, createdAt: issue.createdAt?.toISOString() }, state)
+        console.log(`[dispatch] Score: ${formatScore(key, score)}`)
+        logActivity('dispatch', `Picked: ${key} (intelligent, score: ${score.total}: ${decision.reasoning})`)
+        notify(isRetry
+          ? `🔄 Retrying **${key}** (attempt ${attempt}/${maxAttempts})...`
+          : `🔍 Picked up: **${key}** — ${issue.title}`
+        )
+
+        handlerOwnsSlot = true
+        handleIssue({
+          repository: { nameWithOwner: issue.repo },
+          number: issue.number,
+          title: issue.title,
+        }, config, attempt, pc ?? undefined)
+
+      } else if (decision.action === 'auto_merge') {
+        const pr = filteredMerge.find(p => p.repo === decision.repo && p.number === decision.number)
+        if (!pr) return
+        const key = `merge:${pr.repo}#${pr.number}`
+        const state = getIssueState(key)
+        const attempt = (state?.attempts || 0) + 1
+
+        console.log(`[dispatch] Auto-merging: ${pr.repo}#${pr.number} — ${pr.title} (attempt ${attempt})`)
+        logActivity('dispatch', `Auto-merging: ${pr.repo}#${pr.number} (intelligent: ${decision.reasoning})`)
+        notify(`🚀 Auto-merging **${pr.repo}#${pr.number}** — ${pr.title}`)
+
+        try {
+          const { stdout: mergeOutput } = await execFileAsync('gh', [
+            'pr', 'merge', String(pr.number),
+            '--repo', pr.repo,
+            '--squash',
+            '--delete-branch',
+          ], {
+            encoding: 'utf-8',
+            timeout: 30_000,
+            env: { ...process.env, GH_PAGER: '' },
           })
+          if (mergeOutput.trim()) console.log(`[dispatch] Merge output: ${mergeOutput.trim()}`)
+          setIssueState(key, { status: 'done', attempts: attempt, repo: pr.repo, number: pr.number, type: 'merge' })
           notify(`✅ Merged **${pr.repo}#${pr.number}** — ${pr.title}`)
           logActivity('dispatch', `Merged: ${pr.repo}#${pr.number}`)
-        } else {
-          console.error(`[dispatch] Auto-merge failed for ${pr.repo}#${pr.number}`)
-          setIssueState(key, {
-            status: 'failed',
-            attempts: attempt,
-            repo: pr.repo,
-            number: pr.number,
-            type: 'merge',
-            error: 'gh pr merge returned empty (check rate limits or PR state)',
-          })
+        } catch (mergeErr: any) {
+          const errMsg = mergeErr?.stderr || mergeErr?.message || 'gh pr merge failed'
+          console.error(`[dispatch] Auto-merge failed for ${pr.repo}#${pr.number}: ${errMsg}`)
+          setIssueState(key, { status: 'failed', attempts: attempt, repo: pr.repo, number: pr.number, type: 'merge', error: errMsg })
           notify(`❌ Auto-merge failed for **${pr.repo}#${pr.number}**`)
         }
-
-        lastDispatchTime = Date.now()
-        dispatchStatus = 'idle'
-        return
+      }
+    } finally {
+      // Release worker slot if no handler took ownership
+      if (!handlerOwnsSlot) {
+        releaseWorkerSlot()
       }
     }
 
+    // Reset snapshot so next sync detects the worker becoming busy
+    resetSnapshot()
     lastDispatchTime = Date.now()
     dispatchStatus = 'idle'
-    logActivity('dispatch', 'No actionable work found')
   } catch (err: any) {
     console.error('[dispatch] Error:', err.message)
     logActivity('dispatch', `Error: ${err.message}`)
