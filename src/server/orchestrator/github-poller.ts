@@ -72,7 +72,8 @@ async function buildPrompt(repo: string, number: number, detail: any, existingPr
 
   const changesetStep = `5. **Create a changeset** (REQUIRED):
    - Check if \`.changeset/config.json\` exists. If it does, this repo uses changesets.
-   - Create a changeset file: \`.changeset/<adjective>-<noun>.md\` (e.g., \`brave-pandas.md\`) with format:
+   - Check if a changeset file already exists in \`.changeset/\` (any \`.md\` file other than \`README.md\`). If one already exists, skip creating a new one.
+   - If no changeset exists, create one: \`.changeset/<adjective>-<noun>.md\` (e.g., \`brave-pandas.md\`) with format:
      \`\`\`
      ---
      "<package-name>": patch
