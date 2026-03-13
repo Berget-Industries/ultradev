@@ -337,7 +337,7 @@ async function syncPrs(username: string, repos: string[]) {
   // --- Phase 2: Cross-repo queries for mentions and review-requested ---
   // `gh search prs` returns a different JSON shape: repository.nameWithOwner for repo,
   // and field names like headRepositoryOwner, etc. We need to map fields accordingly.
-  const searchJsonFields = 'repository,number,title,url,state,headRefName,baseRefName,body,createdAt,updatedAt,author'
+  const searchJsonFields = 'repository,number,title,url,state,body,createdAt,updatedAt,author'
 
   const mentionedRaw = gh(
     'search', 'prs',
