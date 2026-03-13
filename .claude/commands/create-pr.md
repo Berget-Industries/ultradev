@@ -38,5 +38,17 @@ Create a pull request for the current branch with a changeset.
   🤖 Generated with [Claude Code](https://claude.com/claude-code)
   ```
 
-### 4. Output
+### 4. CodeRabbit Review Loop
+- Wait for CI: `gh pr checks <number> --watch`
+- If CI fails, fix the issue, commit, push, and repeat
+- Comment `@coderabbitai review` on the PR to trigger review
+- Poll `gh pr view <number> --json reviewDecision --jq .reviewDecision` every 60s
+- If CHANGES_REQUESTED:
+  - Read all comments
+  - For nitpicks (🧹/🔵): reply with reasoning, resolve thread
+  - For real issues: fix code, push, resolve ALL threads, comment `@coderabbitai review`
+  - Repeat polling
+- If APPROVED + CI green: `gh pr merge <number> --squash --delete-branch --auto`
+
+### 5. Output
 - Print the PR URL when done

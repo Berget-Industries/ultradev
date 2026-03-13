@@ -70,19 +70,57 @@ async function buildPrompt(repo: string, number: number, detail: any, existingPr
     .map((c: any) => `**${c.author.login}**: ${c.body}`)
     .join('\n\n')
 
-  const ciWaitStep = `8. After pushing, wait for CI checks to complete. Run this in a loop every 30 seconds until all checks finish:
-   \`gh pr checks <PR_NUMBER> --repo ${repo} --watch\`
-   If any check fails, read the failure logs, fix the issue, commit, and push again. Repeat until CI is green.`
+  const changesetStep = `5. **Create a changeset** (REQUIRED):
+   - Check if \`.changeset/config.json\` exists. If it does, this repo uses changesets.
+   - Create a changeset file: \`.changeset/<branch-name>.md\` with format:
+     \`\`\`
+     ---
+     "<package-name>": patch
+     ---
+
+     <Summary of what changed and why>
+     \`\`\`
+   - Use \`patch\` for bug fixes, \`minor\` for new features, \`major\` for breaking changes.
+   - Find the package name from the root \`package.json\` \`name\` field.
+   - If the repo doesn't use changesets (no \`.changeset/config.json\`), skip this step.`
+
+  const coderabbitLoop = `
+## CRITICAL: Close the CodeRabbit review loop
+
+After creating/updating the PR, you MUST:
+
+A. **Wait for CI:** \`gh pr checks <PR_NUMBER> --repo ${repo} --watch\`
+   If any check fails, fix the issue, commit, push, and repeat.
+
+B. **Request CodeRabbit review:**
+   \`gh pr comment <PR_NUMBER> --repo ${repo} --body "@coderabbitai review"\`
+
+C. **Poll for review decision (up to 10 minutes):**
+   Run every 60 seconds:
+   \`gh pr view <PR_NUMBER> --repo ${repo} --json reviewDecision --jq .reviewDecision\`
+   - If APPROVED + CI green: \`gh pr merge <PR_NUMBER> --repo ${repo} --squash --delete-branch --auto\`
+   - If CHANGES_REQUESTED: read feedback, triage (nitpicks vs real issues), fix, push, resolve threads, request re-review, repeat.
+   - If REVIEW_REQUIRED after 10 min: stop, orchestrator will handle next cycle.
+
+D. **Handling CodeRabbit feedback:**
+   - 🧹 Nitpick / 🔵 Trivial: reply with brief reasoning, resolve thread, no code change needed.
+   - Real issues: fix code, push, resolve ALL threads, then \`@coderabbitai review\`.
+
+E. **Verify issue closure:**
+   After merge, check: \`gh issue view ${number} --repo ${repo} --json state --jq .state\`
+   If still open: \`gh issue close ${number} --repo ${repo}\``
 
   const prInstructions = existingPrUrl
-    ? `5. Commit your changes with a clear message referencing #${number}.
-6. Push your commits to this branch: \`git push origin HEAD\`
-7. The existing PR (${existingPrUrl}) will be updated automatically. Do NOT create a new PR.
-${ciWaitStep}`
-    : `5. Commit your changes with a clear message referencing #${number}.
-6. Push this branch and create a pull request using \`gh pr create\`.
-7. The PR title should reference the issue. The PR body should explain what you changed and why.
-${ciWaitStep}`
+    ? `${changesetStep}
+6. Commit your changes with a clear message referencing #${number}.
+7. Push your commits to this branch: \`git push origin HEAD\`
+8. The existing PR (${existingPrUrl}) will be updated automatically. Do NOT create a new PR.
+${coderabbitLoop}`
+    : `${changesetStep}
+6. Commit your changes with a clear message referencing #${number}.
+7. Push this branch and create a pull request using \`gh pr create\`.
+8. The PR title should reference the issue. The PR body should explain what you changed and why.
+${coderabbitLoop}`
 
   const resumeContext = existingPrUrl
     ? `## IMPORTANT: Resuming Previous Work

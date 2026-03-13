@@ -215,20 +215,58 @@ The PR merges \`${prBranch}\` into \`${pr.baseRefName}\`.
 ## Instructions
 
 1. Read and understand ALL the review feedback carefully.
-2. Explore the relevant code to understand context.
-3. Make the requested changes on this branch (\`${prBranch}\`).
-4. Run tests if they exist. Use \`pnpm --filter <package> test\` to run tests.
-5. Commit your changes with a clear message describing what review feedback you addressed.
-6. Push your commits to origin: \`git push origin ${prBranch}\`
-7. The existing PR will be updated automatically. Do NOT create a new PR.
-8. After pushing, wait for CI checks to complete: \`gh pr checks ${pr.number} --repo ${repo} --watch\`
-   If any check fails, read the failure logs, fix the issue, commit, and push again. Repeat until CI is green.
+2. **Triage each comment:**
+   - If a comment is labeled 🧹 Nitpick or 🔵 Trivial: you do NOT need to change code. Instead, reply to the comment with a brief explanation of your reasoning, then resolve the thread.
+   - If a comment is a real issue (not a nitpick): fix the code as requested.
+3. Explore the relevant code to understand context.
+4. Make the requested changes on this branch (\`${prBranch}\`).
+5. Run tests if they exist. Use \`pnpm --filter <package> test\` to run tests.
+6. Commit your changes with a clear message describing what review feedback you addressed.
+7. Push your commits to origin: \`git push origin ${prBranch}\`
+8. The existing PR will be updated automatically. Do NOT create a new PR.
+
+## CRITICAL: Close the CodeRabbit review loop
+
+After pushing your changes, you MUST complete ALL of these steps:
+
+9. **Resolve ALL review threads** you addressed:
+   For each review comment (both fixed and nitpick-replied):
+   \`\`\`
+   gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "<thread_id>"}) { thread { isResolved } } }'
+   \`\`\`
+   To find thread IDs, use:
+   \`\`\`
+   gh api repos/${repo}/pulls/${pr.number}/comments --jq '.[] | {id: .node_id, body: .body[:80], path: .path}'
+   \`\`\`
+
+10. **Request CodeRabbit re-review:**
+    \`\`\`
+    gh pr comment ${pr.number} --repo ${repo} --body "@coderabbitai review"
+    \`\`\`
+
+11. **Wait for CI to pass:**
+    \`\`\`
+    gh pr checks ${pr.number} --repo ${repo} --watch
+    \`\`\`
+    If any check fails, read the failure logs, fix the issue, commit, push, and repeat from step 9.
+
+12. **Poll for review approval (up to 10 minutes):**
+    Run this in a loop every 60 seconds:
+    \`\`\`
+    gh pr view ${pr.number} --repo ${repo} --json reviewDecision --jq .reviewDecision
+    \`\`\`
+    - If APPROVED: you're done, the orchestrator will auto-merge.
+    - If CHANGES_REQUESTED: read new feedback and go back to step 1.
+    - If still REVIEW_REQUIRED after 10 min: stop polling, the orchestrator will pick it up on next cycle.
 
 ## CRITICAL RULES
 - Do NOT create a new branch. Stay on \`${prBranch}\`.
 - Do NOT create a new pull request. Just push to the existing branch.
 - **NEVER run \`pnpm install\`, \`pnpm add\`, \`npm install\`, or any dependency installation command.** Dependencies are already installed.
-- Do not ask questions — make reasonable decisions and proceed.`
+- Do not ask questions — make reasonable decisions and proceed.
+- ALWAYS resolve review threads and request re-review after pushing. Never skip this step.
+- For nitpicks (🧹/🔵): reply with reasoning, resolve thread, no code change needed.
+- For real issues: fix code, push, resolve thread, request re-review.`
 
   return prompt
 }

@@ -170,9 +170,24 @@ export async function intelligentDispatch(plate: Plate, config: Config): Promise
     return { action: 'skip', repo: '', number: 0, reasoning: 'All items are done, in_progress, or have no actionable signal.' }
   }
 
+  // --- ONE-AT-A-TIME RULE ---
+  // If there are any open PRs that are NOT yet merged (pr_review, conflict, auto_merge, pr_open),
+  // do NOT start new issues. Focus on getting existing PRs through the review→merge lifecycle.
+  const hasOpenPrs = plate.items.some(i =>
+    (i.type === 'pr_review' || i.type === 'conflict' || i.type === 'auto_merge' || i.type === 'pr_open') &&
+    i.status !== 'done'
+  )
+  const filteredItems = hasOpenPrs
+    ? actionableItems.filter(i => i.type !== 'issue')
+    : actionableItems
+
+  if (filteredItems.length === 0) {
+    return { action: 'skip', repo: '', number: 0, reasoning: 'Open PRs exist — finish PR lifecycle before starting new issues.' }
+  }
+
   // If only one actionable item, no need to call Claude
-  if (actionableItems.length === 1) {
-    const item = actionableItems[0]
+  if (filteredItems.length === 1) {
+    const item = filteredItems[0]
     const actionMap: Record<PlateItem['type'], DispatchDecision['action']> = {
       'issue': 'handle_issue',
       'pr_review': 'handle_pr_review',
@@ -184,11 +199,11 @@ export async function intelligentDispatch(plate: Plate, config: Config): Promise
       action: actionMap[item.type],
       repo: item.repo,
       number: item.number,
-      reasoning: 'Only one actionable item.',
+      reasoning: hasOpenPrs ? 'Only one actionable PR item (issues blocked by open PRs).' : 'Only one actionable item.',
     }
   }
 
-  const actionablePlate: Plate = { ...plate, items: actionableItems }
+  const actionablePlate: Plate = { ...plate, items: filteredItems }
   const prompt = buildDispatchPrompt(actionablePlate)
 
   try {
@@ -219,6 +234,12 @@ function buildDispatchPrompt(plate: Plate): string {
 
 ${itemList}
 
+## CRITICAL RULE: One issue at a time
+- NEVER start a new issue if any open PR exists (review pending, conflicts, CI failing, or auto-mergeable).
+- The full lifecycle is: issue → branch → code → push → PR → CI green → CodeRabbit review → address feedback → merge → THEN next issue.
+- If there are open PRs on the plate, ONLY pick PR-related actions (handle_pr_review, handle_conflict, auto_merge).
+- Only pick handle_issue when there are ZERO open PRs.
+
 ## Decision guidelines:
 - status='done' with no new activity since last addressed → SKIP (already handled)
 - status='done' but "Latest review" timestamp > "Last addressed" timestamp → NEW FEEDBACK arrived, should iterate on the PR
@@ -228,8 +249,7 @@ ${itemList}
 - Merge conflicts block progress on existing work — resolve them
 - Auto-mergeable PRs (type=auto_merge) are quick wins — merge them to clear the queue
 - Items with many failed attempts (3+) should be deprioritized — they may need human intervention
-- Consider the big picture: many open PRs → focus on getting them merged rather than creating more
-- New issues (status='pending', attempts=0) are fair game
+- New issues (status='pending', attempts=0) are ONLY fair game if there are no open PRs
 
 ## Response format
 
@@ -273,8 +293,15 @@ function parseDecision(text: string, plate: Plate): DispatchDecision {
 }
 
 // Fallback: use the old priority order if Claude fails
+// Respects one-at-a-time: auto_merge > pr_review > conflict first, then issues only if no PRs
 function fallbackDispatch(plate: Plate): DispatchDecision {
-  const priorityOrder: PlateItem['type'][] = ['pr_review', 'conflict', 'issue', 'auto_merge']
+  const hasOpenPrs = plate.items.some(i =>
+    (i.type === 'pr_review' || i.type === 'conflict' || i.type === 'auto_merge' || i.type === 'pr_open') &&
+    i.status !== 'done'
+  )
+  const priorityOrder: PlateItem['type'][] = hasOpenPrs
+    ? ['auto_merge', 'pr_review', 'conflict']
+    : ['auto_merge', 'pr_review', 'conflict', 'issue']
 
   for (const type of priorityOrder) {
     const item = plate.items.find(i => i.type === type)
