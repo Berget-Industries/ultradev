@@ -13,7 +13,7 @@ export interface PlateItem {
   repo: string
   number: number
   title: string
-  status: string   // pending | done | in_progress | failed
+  status: 'pending' | 'done' | 'in_progress' | 'failed'
   attempts: number
   details: string // human-readable summary
 }
@@ -43,7 +43,7 @@ export function buildUnifiedPlate(issues: GithubIssue[], prs: GithubPr[]): Plate
     const key = `${issue.repo}#${issue.number}`
     const state = getIssueState(key)
     const labels = Array.isArray(issue.labels) ? (issue.labels as string[]) : []
-    const status = state?.status || 'pending'
+    const status = (state?.status || 'pending') as PlateItem['status']
     const attempts = state?.attempts || 0
     const error = state?.error ? ` Last error: ${state.error}` : ''
 
@@ -97,7 +97,7 @@ export function buildUnifiedPlate(issues: GithubIssue[], prs: GithubPr[]): Plate
     const hasNewFeedback =
       !!pr.latestReviewAt &&
       (!lastReviewAt || pr.latestReviewAt.getTime() > new Date(lastReviewAt).getTime())
-    const status = rawStatus === 'done' && hasNewFeedback ? 'pending' : rawStatus
+    const status = (rawStatus === 'done' && hasNewFeedback ? 'pending' : rawStatus) as PlateItem['status']
 
     const latestReviewIso = pr.latestReviewAt?.toISOString() || 'none'
     const lastAddressedIso = lastReviewAt || 'never'
@@ -238,9 +238,10 @@ function parseDecision(text: string, plate: Plate): DispatchDecision {
           return fallbackDispatch(plate)
         }
       }
-      if (decision.reasoning) {
+      if (typeof decision.reasoning === 'string') {
         return decision
       }
+      console.warn('[intelligent-dispatch] Decision missing reasoning field')
     } catch { /* fall through to fallback */ }
   }
 
@@ -252,13 +253,8 @@ function parseDecision(text: string, plate: Plate): DispatchDecision {
 function fallbackDispatch(plate: Plate): DispatchDecision {
   const priorityOrder: PlateItem['type'][] = ['pr_review', 'conflict', 'issue', 'auto_merge']
 
-  // Filter out done, in_progress, and non-actionable items
-  const actionable = plate.items.filter(i =>
-    i.status !== 'done' && i.status !== 'in_progress' && i.type !== 'pr_open'
-  )
-
   for (const type of priorityOrder) {
-    const item = actionable.find(i => i.type === type)
+    const item = plate.items.find(i => i.type === type)
     if (item) {
       const actionMap: Record<PlateItem['type'], DispatchDecision['action']> = {
         'issue': 'handle_issue',
