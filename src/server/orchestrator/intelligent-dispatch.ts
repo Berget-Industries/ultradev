@@ -1,9 +1,6 @@
-import { execFile } from 'child_process'
-import { promisify } from 'util'
+import { spawn } from 'child_process'
 import type { Config } from './config.js'
 import { getIssueState } from './state.js'
-
-const execFileAsync = promisify(execFile)
 import { logActivity } from './activity-log.js'
 import type { GithubIssue, GithubPr } from '@prisma/client'
 
@@ -120,6 +117,44 @@ export function buildUnifiedPlate(issues: GithubIssue[], prs: GithubPr[]): Plate
   }
 }
 
+/** Spawn claude and pipe the prompt via stdin (avoids shell argument length limits) */
+function runClaudeWithStdin(command: string, args: string[], input: string, timeout: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env },
+    })
+
+    let stdout = ''
+    let stderr = ''
+
+    child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString() })
+    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
+
+    const timer = setTimeout(() => {
+      child.kill('SIGTERM')
+      reject(new Error(`Timed out after ${timeout}ms`))
+    }, timeout)
+
+    child.on('close', (code) => {
+      clearTimeout(timer)
+      if (code === 0) {
+        resolve(stdout)
+      } else {
+        reject(new Error(`Exit code ${code}: ${stderr.slice(0, 500)}`))
+      }
+    })
+
+    child.on('error', (err) => {
+      clearTimeout(timer)
+      reject(err)
+    })
+
+    child.stdin.write(input)
+    child.stdin.end()
+  })
+}
+
 // Call Claude to make the dispatch decision
 export async function intelligentDispatch(plate: Plate, config: Config): Promise<DispatchDecision> {
   if (plate.items.length === 0) {
@@ -157,23 +192,11 @@ export async function intelligentDispatch(plate: Plate, config: Config): Promise
   const prompt = buildDispatchPrompt(actionablePlate)
 
   try {
-    const { stdout } = await execFileAsync(config.claude.command, [
+    const text = await runClaudeWithStdin(config.claude.command, [
       '--print',
       '--max-turns', '1',
-      '--output-format', 'json',
-      prompt,
-    ], {
-      encoding: 'utf-8',
-      timeout: 30_000, // 30s max for a dispatch decision
-      env: { ...process.env },
-    })
-
-    const parsed = JSON.parse(stdout.trim())
-    // Claude with --output-format json wraps the response — extract the text content
-    const text = typeof parsed === 'string' ? parsed :
-      parsed.result || parsed.content || parsed.text ||
-      (Array.isArray(parsed) ? parsed.find((b: any) => b.type === 'text')?.text : null) ||
-      JSON.stringify(parsed)
+      '--model', 'haiku',
+    ], prompt, 30_000)
 
     const decision = parseDecision(text, actionablePlate)
     logActivity('intelligent-dispatch', `Decision: ${decision.action} ${decision.repo}#${decision.number} — ${decision.reasoning}`)
