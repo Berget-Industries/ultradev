@@ -1,5 +1,11 @@
 # ultradev-dashboard
 
+## 1.11.0
+
+### Minor Changes
+
+- [#52](https://github.com/Berget-Industries/ultradev/pull/52) [`71dda14`](https://github.com/Berget-Industries/ultradev/commit/71dda1495f3932522f4448fc26b26c9797a2d0e0) Thanks [@bergetUltraDev](https://github.com/bergetUltraDev)! - Upgrade autonomous workflow: enforce one-issue-at-a-time, CodeRabbit review loop closure, nitpick triage, and mandatory changesets
+
 ## 1.10.0
 
 ### Minor Changes
