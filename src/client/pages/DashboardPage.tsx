@@ -632,18 +632,20 @@ export default function DashboardPage() {
             <Card className="p-3 col-span-2 flex flex-col justify-between">
               <span className="text-xs text-zinc-500 font-medium mb-1">Last 14 Days</span>
               <div className="flex items-end gap-[3px] h-10 flex-1">
-                {perfData.daily.map((d) => {
+                {(() => {
                   const max = Math.max(...perfData.daily.map(x => x.tasks), 1)
-                  const h = Math.max(2, (d.tasks / max) * 40)
-                  return (
-                    <div
-                      key={d.date}
-                      className="flex-1 rounded-sm transition-all duration-300"
-                      style={{ height: `${h}px`, backgroundColor: d.failures > 0 ? '#ef444480' : d.tasks > 0 ? '#3b82f680' : '#27272a' }}
-                      title={`${d.date}: ${d.tasks} tasks, ${d.prs} PRs, $${d.costUsd.toFixed(2)}`}
-                    />
-                  )
-                })}
+                  return perfData.daily.map((d) => {
+                    const h = Math.max(2, (d.tasks / max) * 40)
+                    return (
+                      <div
+                        key={d.date}
+                        className="flex-1 rounded-sm transition-all duration-300"
+                        style={{ height: `${h}px`, backgroundColor: d.failures > 0 ? '#ef444480' : d.tasks > 0 ? '#3b82f680' : '#27272a' }}
+                        title={`${d.date}: ${d.tasks} tasks, ${d.prs} PRs, $${d.costUsd.toFixed(2)}`}
+                      />
+                    )
+                  })
+                })()}
               </div>
               <div className="flex justify-between mt-1">
                 <span className="text-[10px] text-zinc-600">{perfData.daily[0]?.date.slice(5)}</span>
